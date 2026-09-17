@@ -1,0 +1,87 @@
+version: 2
+
+models:
+  - name: mart_sport_totals
+    description: 종목별 전 기간 누적 (overview.py 1절 이식). 중복 활동 제외.
+    columns:
+      - name: sport
+        tests:
+          - unique
+          - not_null
+          - accepted_values:
+              values: [cycling, running, swimming, walking, other]
+      - name: activities
+        tests: [not_null]
+      - name: distance_km
+        tests: [not_null]
+
+  - name: mart_yearly_summary
+    description: 연도 × 종목 집계 (overview.py 2절 이식).
+    tests:
+      - dbt_utils_unique_combination:
+          # dbt_utils 없이 쓰는 커스텀 제너릭 테스트 (macros/unique_combination.sql)
+          combination_of_columns: [year, sport]
+    columns:
+      - name: year
+        tests: [not_null]
+      - name: sport
+        tests: [not_null]
+
+  - name: mart_gear_usage
+    description: 자전거별 누적 사용 (overview.py 3절 이식). 장비 결정의 근거 수치.
+    columns:
+      - name: gear_label
+        tests: [unique, not_null]
+      - name: indoor_pct
+        tests:
+          - not_null
+          - between:
+              min_value: 0
+              max_value: 100
+
+  - name: mart_swim_pace_monthly
+    description: >
+      수영 월별 거리가중 평균 페이스 (overview.py 4절 이식).
+      Strava 평균속도는 휴식 포함이라 강습/자유수영 분리 없이 추세 파악 용도로만 쓸 것.
+    columns:
+      - name: month
+        tests: [unique, not_null]
+      - name: pace_s_per_100m
+        tests:
+          # 100m 당 60~300초 밖이면 데이터가 이상한 것이다 (세계기록 ~47초, 걸어도 300초 안쪽)
+          - between:
+              min_value: 60
+              max_value: 300
+
+  - name: mart_ride_power
+    description: >
+      라이딩별 파워 지표. NP 를 원본 스트림에서 직접 계산하고 Strava 제공값과 대조한다.
+      IF / TSS 는 ftp-log.md 의 현재값(283W) 기준.
+    columns:
+      - name: activity_id
+        tests: [unique, not_null]
+      - name: np_computed
+        tests:
+          - not_null
+          - between: {min_value: 30, max_value: 600}
+      - name: intensity_factor
+        tests:
+          # IF 가 1.5 를 넘으면 FTP 설정이 틀렸거나 파워 데이터가 깨진 것이다
+          - between: {min_value: 0.1, max_value: 1.5}
+      - name: tss
+        tests:
+          - between: {min_value: 0, max_value: 1500}
+
+  - name: mart_riduck_metrics
+    description: 라이덕이 활동 description 에 남긴 훈련부하 지표 (overview.py 3절 이식).
+    columns:
+      - name: activity_id
+        tests: [unique, not_null]
+      - name: sport
+        tests: [not_null]
+      - name: intensity
+        tests:
+          - between: {min_value: 0, max_value: 2}
+      - name: implied_ftp
+        tests:
+          - between: {min_value: 100, max_value: 500}

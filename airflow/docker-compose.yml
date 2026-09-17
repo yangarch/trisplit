@@ -1,0 +1,138 @@
+# 최소 구성 Airflow 3 + LocalExecutor.
+#
+# 공식 docker-compose 는 Celery/Redis/워커 분리까지 들어 있어 300줄이 넘는데,
+# 개인 프로젝트에 분산 워커는 필요 없다. LocalExecutor 면 스케줄러가 태스크를 직접 돌린다.
+# Docker 가용 메모리가 7.7GB 라 컴포넌트를 늘릴 여유도 없다.
+#
+#   cp .env.example .env && $EDITOR .env      # 경로 + 자격증명
+#   docker compose up -d
+#   http://localhost:8080
+#
+# ⚠️ 자격증명을 파일에 박지 않는다. 기본값도 두지 않는다 —
+#    기본값이 있으면 그대로 쓰게 되고, 8080 이 열려 있으면 그게 그대로 접근 경로가 된다.
+#    `:?` 문법으로 .env 에 없으면 아예 뜨지 않게 했다.
+#
+# ⚠️ 프로젝트를 **호스트와 같은 절대경로**로 마운트한다 (.env 의 TC_PROJECT_PATH).
+#    Iceberg 의 hadoop 카탈로그는 테이블 location 과 매니페스트 경로를 **절대경로로 메타데이터에
+#    박아 넣는다.** 컨테이너에서 /opt/project 로 마운트하면 메타데이터가 가리키는
+#    /Users/... 경로를 못 찾아 NotFoundException 이 난다.
+#    같은 경로로 마운트하면 호스트와 컨테이너가 하나의 웨어하우스를 공유할 수 있다.
+#
+#    이게 hadoop 카탈로그의 한계고, 실무에서 오브젝트 스토리지(s3://) + 카탈로그 서비스
+#    (REST/Glue/Nessie)를 쓰는 이유다. 개인 프로젝트에 그걸 띄우는 건 과하다고 판단해
+#    같은 경로 마운트로 간다 — 대신 이 제약을 알고 쓴다.
+
+x-airflow-common: &airflow-common
+  build: .
+  image: training-companion/airflow:3.3.1
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    # 비밀번호가 URL 에 그대로 들어간다 — @ : / # % 가 들어가면 SQLAlchemy 가
+    # 호스트를 잘못 파싱해 인증 오류가 아니라 접속 오류로 나타난다(추적이 어렵다).
+    # .env.example 에서 16진수/영숫자만 쓰도록 안내한다.
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${POSTGRES_PASSWORD}@postgres/airflow
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_FOLDER: ${TC_PROJECT_PATH}/lakehouse/airflow/dags
+    AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW_JWT_SECRET:?.env 에 설정하세요}
+    # Airflow 3 의 기본 인증은 SimpleAuthManager 다.
+    # `airflow users create` 는 FAB 전용이라 여기서는 동작하지 않는다
+    # (AttributeError: 'AirflowSecurityManagerV2' object has no attribute 'find_role').
+    # 사용자는 설정으로 선언하고, 비밀번호는 init 이 .env 값으로 파일에 써 넣는다.
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "${AIRFLOW_ADMIN_USER}:admin"
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/auth/passwords.json
+    # Airflow 3 는 태스크가 Task Execution API 를 통해 실행된다.
+    # 기본값이 localhost:8080 이라 스케줄러 컨테이너에서는 자기 자신을 찾아 연결이 거부된다
+    # (httpx.ConnectError: [Errno 111] Connection refused).
+    # 컴포즈 네트워크의 서비스 이름으로 가리켜야 한다.
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://apiserver:8080/execution/
+    # 파이프라인이 쓰는 경로·설정. env.sh 의 컨테이너 판이다.
+    TC_ROOT: ${TC_PROJECT_PATH}
+    TC_WAREHOUSE: ${TC_PROJECT_PATH}/lakehouse/warehouse
+    # 호스트는 8g 지만 컨테이너는 Docker 전체가 7.7GB 라 낮춘다.
+    TC_DRIVER_MEMORY: "3g"
+    DBT_PROFILES_DIR: ${TC_PROJECT_PATH}/lakehouse/dbt
+    PYTHONPATH: ${TC_PROJECT_PATH}/lakehouse/scripts
+  volumes:
+    # 호스트와 동일한 절대경로로 마운트 (위 주석 참조).
+    # 스크립트가 __file__ 기준 상대경로로 원본 데이터와 웨어하우스를 찾으므로 구조도 유지된다.
+    - ${TC_PROJECT_PATH}:${TC_PROJECT_PATH}
+    - airflow-logs:/opt/airflow/logs
+    - airflow-auth:/opt/airflow/auth
+    # Iceberg JAR 캐시. 없으면 태스크마다 Maven 에서 다시 받는다.
+    - ivy-cache:/home/airflow/.ivy2.5.2
+  user: "50000:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      # ⚠️ postgres 이미지는 이 값을 **볼륨이 비어 있을 때(initdb)만** 쓴다.
+      #    이미 한 번 뜬 적이 있으면 역할 비밀번호는 옛 값 그대로다 →
+      #    .env 만 바꾸고 재기동하면 airflow 쪽 접속 문자열과 어긋나 db migrate 가 죽는다.
+      #    비밀번호를 바꾸려면 `docker compose down -v` (메타데이터 초기화) 또는 ALTER USER.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?.env 에 설정하세요}
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      retries: 10
+
+  airflow-init:
+    <<: *airflow-common
+    environment:
+      # 관리자 비밀번호는 init 에만 넘긴다 — 스케줄러/apiserver 환경에는 두지 않는다.
+      <<: *airflow-env
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:?.env 에 설정하세요}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?.env 에 설정하세요}
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        # set -e 가 없으면 마지막 echo 가 항상 0 을 만들어, db migrate 나 비밀번호 파일
+        # 쓰기가 실패해도 init 이 "성공"으로 끝난다. 그러면 dependents 가
+        # service_completed_successfully 조건을 통과해 기동하고, 사용자는 원인 표시 없이
+        # 401 만 보게 된다. (named volume 권한 문제로 실제로 한 번 겪었다)
+        set -euo pipefail
+        airflow db migrate
+        mkdir -p /opt/airflow/auth
+        python -c "import json, os; json.dump({os.environ['AIRFLOW_ADMIN_USER']: os.environ['AIRFLOW_ADMIN_PASSWORD']}, open('/opt/airflow/auth/passwords.json','w'))"
+        echo "[init] SimpleAuthManager 사용자 준비 완료: $${AIRFLOW_ADMIN_USER}"
+    restart: on-failure
+
+  scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  apiserver:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "8080:8080"
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-db:
+  airflow-logs:
+  airflow-auth:
+  ivy-cache:

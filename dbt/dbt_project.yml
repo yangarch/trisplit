@@ -1,0 +1,35 @@
+name: training_companion
+version: "1.0.0"
+config-version: 2
+profile: training_companion
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # 분석 윈도우 — overview.py 의 --since-days 기본값과 맞춘다
+  recent_window_days: 60
+
+  # 품질 임계값. 실무에서 Airflow 태스크 안에 하드코딩돼 있던 숫자들을
+  # 선언으로 끌어냈다 — 조정 이력이 git 에 남고, 테스트만 따로 돌릴 수 있다.
+  volume_regression_pct: 5      # 직전 적재 대비 행 수 감소 허용폭 (%)
+  freshness_max_days: 14        # 최신 활동이 이보다 오래되면 경고
+  np_bias_max_w: 15             # NP 직접계산 vs Strava 평균 편향 상한 (측정값 8.04W)
+  min_power_coverage_pct: 95    # 파워 라이딩의 per-point watts 커버리지 하한
+
+models:
+  training_companion:
+    +file_format: iceberg
+    staging:
+      # Iceberg 의 hadoop 카탈로그는 뷰를 지원하지 않는다
+      # ("Replacing a view is not supported by catalog: tc").
+      # staging 은 얇은 필터/선택이라 ephemeral 로 두면 마트에 CTE 로 인라인된다 —
+      # 뷰도 필요 없고 저장소도 안 쓴다.
+      +materialized: ephemeral
+    marts:
+      +materialized: table
+      +schema: gold

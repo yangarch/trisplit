@@ -1,0 +1,23 @@
+# dbt-spark 의 session 방식 — Thrift 서버 없이 로컬 SparkSession 에 직접 붙는다.
+# 개인 프로젝트에 Thrift/Hive Metastore 를 띄우는 것은 운영 비용 대비 얻는 게 없다고 판단.
+#
+# server_side_parameters 는 dbt 가 SparkSession.builder.config() 로 그대로 넘긴다
+# (dbt/adapters/spark/session.py). Iceberg 카탈로그 설정이 여기로 들어가야
+# scripts/spark_session.py 와 같은 웨어하우스를 보게 된다.
+training_companion:
+  target: dev
+  outputs:
+    dev:
+      type: spark
+      method: session
+      host: localhost
+      schema: gold
+      server_side_parameters:
+        spark.jars.packages: "org.apache.iceberg:iceberg-spark-runtime-4.1_2.13:1.11.0"
+        spark.sql.extensions: "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
+        spark.sql.catalog.tc: "org.apache.iceberg.spark.SparkCatalog"
+        spark.sql.catalog.tc.type: "hadoop"
+        spark.sql.catalog.tc.warehouse: "{{ env_var('TC_WAREHOUSE') }}"
+        spark.sql.defaultCatalog: "tc"
+        spark.sql.shuffle.partitions: "8"
+        spark.ui.showConsoleProgress: "false"

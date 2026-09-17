@@ -1,0 +1,24 @@
+# 런타임 산출물
+.venv/
+warehouse/
+raw/
+logs/
+__pycache__/
+*.pyc
+
+# dbt
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+dbt/.user.yml
+# ftp-log.md 에서 생성
+dbt/seeds/ftp_log.csv
+
+# 상태·시크릿
+ingest/streams_state.json
+airflow/.env
+# Strava gear_id — 계정에 묶인 식별자
+config/gear_names.json
+
+# OS
+.DS_Store
