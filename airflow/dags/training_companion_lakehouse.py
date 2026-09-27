@@ -9,7 +9,8 @@ Airflow 로 옮기는 실익이 여기 있다 — 순서가 아니라 **의존 �
     bronze_trackpoints ─┤                      └─→ silver_laps_splits ──┤
     bronze_streams ─────┘                                               │
                                                                         ▼
-                                              dbt_seed → dbt_run → dbt_test
+                                              dbt_seed → dbt_run → dbt_test ─┬─→ build_report
+                                                                             └─→ build_html
 
   silver_trackpoints 는 bronze_streams + bronze_trackpoints + silver_activities 를 모두 쓴다
   (스트림 우선 통합 + start_ts_utc 로 offset 정규화).
@@ -108,6 +109,24 @@ with DAG(
         append_env=True,
     )
 
+    # ── 리포트 ── 검증을 통과한 마트로만 만든다 (dbt_test 뒤).
+    #   마크다운 — AI 상담 입력용
+    #   HTML     — 사람이 브라우저·폰으로 보는 용도. compose 의 report 서비스(nginx)가 서빙한다.
+    #              reports/ 가 아니라 reports/web/ 에 쓴다 — nginx 에는 이 폴더만 마운트해서
+    #              날짜별 마크다운·스크립트가 LAN 에 노출되지 않게 한다.
+    build_report = BashOperator(
+        task_id="build_report",
+        bash_command=f'python "{LAKEHOUSE}/scripts/build_report.py" --out "$TC_ROOT/reports/latest_overview.md"',
+        env=TASK_ENV,
+        append_env=True,
+    )
+    build_html = BashOperator(
+        task_id="build_html",
+        bash_command=f'python "{LAKEHOUSE}/scripts/build_html.py" --out "$TC_ROOT/reports/web/index.html"',
+        env=TASK_ENV,
+        append_env=True,
+    )
+
     # ── 의존 그래프 ──
     bronze_activities >> silver_activities
 
@@ -117,3 +136,4 @@ with DAG(
     silver_activities >> silver_laps_splits
 
     [silver_trackpoints, silver_laps_splits] >> export_ftp >> dbt_seed >> dbt_run >> dbt_test
+    dbt_test >> [build_report, build_html]

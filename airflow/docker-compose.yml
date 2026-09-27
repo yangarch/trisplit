@@ -60,7 +60,11 @@ x-airflow-common: &airflow-common
     - airflow-auth:/opt/airflow/auth
     # Iceberg JAR 캐시. 없으면 태스크마다 Maven 에서 다시 받는다.
     - ivy-cache:/home/airflow/.ivy2.5.2
-  user: "50000:0"
+  # 맥(Docker Desktop)은 bind mount 의 uid 를 무시하지만 Linux 는 그대로 검사한다.
+  # 서버에서 50000 으로 돌면 호스트 사용자(1000) 소유인 프로젝트 폴더에 쓰지 못해
+  # warehouse·리포트 쓰기가 Permission denied 로 죽는다 → .env 의 AIRFLOW_UID 로 맞춘다.
+  # gid 0 은 유지한다 (이미지 쪽 디렉토리가 그룹 0 쓰기 가능하게 만들어져 있다).
+  user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     postgres:
       condition: service_healthy
@@ -90,8 +94,12 @@ services:
       <<: *airflow-env
       AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:?.env 에 설정하세요}
       AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:?.env 에 설정하세요}
-    entrypoint: /bin/bash
+    # entrypoint 를 bash 로 바꾸지 않는다 — 공식 entrypoint 가 AIRFLOW_UID 처럼 이미지에 없는
+    # uid 에 /etc/passwd 항목과 HOME 을 만들어 준다. 건너뛰면 HOME=/ 가 되어
+    # ~/.local 의 airflow 를 못 찾고(ModuleNotFoundError), getpass 도 실패한다.
+    # 공식 entrypoint 는 첫 인자가 bash 면 그대로 넘겨 실행한다.
     command:
+      - bash
       - -c
       - |
         # set -e 가 없으면 마지막 echo 가 항상 0 을 만들어, db migrate 나 비밀번호 파일
@@ -130,6 +138,19 @@ services:
     depends_on:
       airflow-init:
         condition: service_completed_successfully
+
+  # 사람이 보는 HTML 리포트. 정적 파일 하나라 nginx 로 충분하다 —
+  # 상주 앱(Streamlit 등)은 2014년 i5 에서 Spark 와 CPU 를 다툰다.
+  # reports/web 만 읽기 전용으로 마운트한다. reports/ 전체를 내보내면
+  # 날짜별 마크다운·스크립트까지 LAN 에 노출된다.
+  # 외부 노출 없이 LAN 에서만 접근한다 (공유기 포트포워딩 없음).
+  report:
+    image: nginx:alpine
+    volumes:
+      - ${TC_PROJECT_PATH}/reports/web:/usr/share/nginx/html:ro
+    ports:
+      - "8090:80"
+    restart: unless-stopped
 
 volumes:
   postgres-db:

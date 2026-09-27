@@ -19,8 +19,12 @@ USER airflow
 # uid 50000 인 컨테이너가 하위 폴더를 못 만들어 spark-submit 이 죽는다
 # (FileNotFoundException: .../cache/resolved-...xml → JAVA_GATEWAY_EXITED).
 # 도커는 첫 마운트 때 이미지 쪽 내용과 소유권을 볼륨에 복사하므로, 여기서 만들어두면 해결된다.
+#
+# g+rwX — Linux 호스트에서는 AIRFLOW_UID 를 호스트 사용자 uid 로 바꿔 띄운다(compose 참조).
+# 그때도 gid 는 0 이라, 그룹 쓰기를 열어 두면 uid 가 50000 이 아니어도 캐시·인증 파일을 쓸 수 있다.
 RUN mkdir -p /home/airflow/.ivy2.5.2/cache /home/airflow/.ivy2.5.2/jars \
- && mkdir -p /opt/airflow/auth
+ && mkdir -p /opt/airflow/auth \
+ && chmod -R g+rwX /home/airflow/.ivy2.5.2 /opt/airflow/auth
 
 # 호스트 requirements.txt 와 같은 버전으로 고정한다 —
 # 컨테이너와 호스트가 다른 Spark 를 쓰면 같은 웨어하우스를 다르게 읽을 수 있다.
