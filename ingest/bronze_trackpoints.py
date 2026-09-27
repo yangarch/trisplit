@@ -37,10 +37,16 @@ from pyspark.sql.types import (
 
 LAKEHOUSE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(LAKEHOUSE_DIR / "scripts"))
+from incremental import (  # noqa: E402
+    count_bytes_occurrences,
+    delete_rows,
+    plan_incremental,
+    to_uri,
+)
 from ingest_audit import record as audit_record  # noqa: E402
 from spark_session import CATALOG, get_spark  # noqa: E402
 
-GPX_GLOB = str(LAKEHOUSE_DIR.parent / "activities/strava/raw-gpx/*.gpx")
+GPX_DIR = LAKEHOUSE_DIR.parent / "activities/strava/raw-gpx"
 NS = f"{CATALOG}.bronze"
 TABLE = f"{NS}.trackpoints_gpx"
 RUN_TS = datetime.now(tz=timezone.utc)
@@ -110,27 +116,63 @@ ID_RE = r"_(\d+)\.gpx$"
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--limit-files", type=int, help="앞에서 N개 파일만 (개발용)")
+    ap.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help="증분 대신 전체 재적재 (스키마 변경 후 1회 필요)",
+    )
     args = ap.parse_args()
 
     spark = get_spark("bronze-trackpoints")
     spark.sparkContext.setLogLevel("ERROR")
     spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {NS}")
 
+    all_files = sorted(GPX_DIR.glob("*.gpx"))
+    if args.limit_files:
+        all_files = all_files[: args.limit_files]
+
+    plan = plan_incremental(spark, TABLE, all_files, full_refresh=args.full_refresh)
+    print(f"[*] 소스 GPX {len(all_files):,} 개 — {plan.describe()}")
+
+    if plan.nothing_to_do:
+        print("[*] 변경 없음 — 파싱 건너뜀")
+        n = spark.table(TABLE).count()
+        expected = count_bytes_occurrences(all_files, b"<trkpt")
+        audit_record(
+            spark, layer="bronze", table_name=TABLE,
+            source_kind="gpx_trkpt", source_count=expected,
+            loaded_count=n, run_ts=RUN_TS, note=f"{len(all_files)} files (no-op)",
+        )
+        print(f"[✓] {TABLE} — {n:,} 행 (변동 없음)")
+        spark.stop()
+        return 0
+
+    # 변경·삭제된 소스의 기존 행을 먼저 지운다 (증분 재적재)
+    if plan.to_delete:
+        delete_rows(spark, TABLE, plan.to_delete)
+        print(f"[*] 기존 행 삭제: 소스 {len(plan.to_delete)} 개분")
+
+    # 이번에 파싱할 파일만 읽는다 — 경로를 명시적으로 넘긴다
+    paths = [str(p) for p in plan.to_parse]
     files = (
-        spark.read.text(GPX_GLOB, wholetext=True)
+        spark.read.text(paths, wholetext=True)
         .withColumn("_source_file", F.input_file_name())
         .withColumnRenamed("value", "xml")
     )
-    if args.limit_files:
-        files = files.limit(args.limit_files)
 
-    n_files = files.count()
-    print(f"[*] GPX 파일 {n_files:,} 개 읽음")
+    # mtime 은 드라이버가 알고 있으므로 작은 DF 로 만들어 조인한다
+    mtime_df = spark.createDataFrame(
+        [(to_uri(p), float(p.stat().st_mtime)) for p in plan.to_parse],
+        "_source_file string, _source_mtime double",
+    )
+
+    n_files = len(plan.to_parse)
+    print(f"[*] 파싱 대상 {n_files:,} 개")
 
     # wholetext 로 읽으면 파티션이 몇 개 안 되고, 파티션 하나가 1MB 짜리 XML 수십 개 +
     # 파싱된 포인트 배열(활동당 최대 3만 건)을 동시에 들고 있게 된다 → OOM.
     # 파일 수에 맞춰 잘게 쪼개 태스크당 상주 메모리를 낮춘다.
-    files = files.repartition(min(n_files, 96))
+    files = files.repartition(max(1, min(n_files, 96)))
 
     # 매칭 실패 시 regexp_extract 는 빈 문자열을 준다. Spark 4 는 ANSI 가 기본이라
     # ''.cast("long") 이 CAST_INVALID_INPUT 으로 잡을 터뜨린다 → try_cast 로 NULL 처리.
@@ -172,15 +214,20 @@ def main() -> int:
             F.col("_source_file"),
         )
         .withColumn("_ingested_at", F.lit(RUN_TS))
+        .join(mtime_df, "_source_file", "left")
     )
 
-    # 트랙포인트는 append-only 시계열이라 MERGE 가 필요 없다 — 전체 재작성이 더 싸고 단순하다.
-    (
-        points.writeTo(TABLE)
-        .using("iceberg")
-        .partitionedBy(F.years("point_ts"))
-        .createOrReplace()
-    )
+    # 변경분의 기존 행은 위에서 지웠으므로 여기서는 append 만 하면 된다.
+    # (파일 단위로 삭제-후-삽입이라 MERGE 가 필요 없다)
+    if plan.table_exists and not args.full_refresh:
+        points.writeTo(TABLE).append()
+    else:
+        (
+            points.writeTo(TABLE)
+            .using("iceberg")
+            .partitionedBy(F.years("point_ts"))
+            .createOrReplace()
+        )
 
     n = spark.table(TABLE).count()
     print(f"[✓] {TABLE} — {n:,} 행 적재")
@@ -214,14 +261,15 @@ def main() -> int:
     files_meta = spark.sql(f"SELECT count(*) n, round(sum(file_size_in_bytes)/1024/1024,1) mb FROM {TABLE}.files").first()
     print(f"[*] 데이터 파일 {files_meta['n']}개 / {files_meta['mb']} MB (원본 XML {n_files}개 → Parquet)")
 
-    # 수집량 = 소스 GPX 안의 <trkpt> 총 개수. 파싱 후 행 수와 일치해야 한다.
-    # (파일 수가 아니라 포인트 수로 세는 게 핵심 — 파일 하나가 통째로 파싱 실패해도 잡힌다)
-    expected_pts = parsed.select(F.sum(F.size("pts"))).first()[0] or 0
+    # 수집량은 **소스 전체**를 독립적으로 센다 (이번에 파싱한 것만이 아니라).
+    # XML 파싱이 아니라 바이트 스캔이라 싸고, 건너뛴 파일까지 포함해 검증된다.
+    expected_pts = count_bytes_occurrences(all_files, b"<trkpt")
     print()
     audit_record(
         spark, layer="bronze", table_name=TABLE,
         source_kind="gpx_trkpt", source_count=expected_pts,
-        loaded_count=n, run_ts=RUN_TS, note=f"{n_files} files",
+        loaded_count=n, run_ts=RUN_TS,
+        note=f"{len(all_files)} files, parsed {n_files}",
     )
 
     spark.stop()

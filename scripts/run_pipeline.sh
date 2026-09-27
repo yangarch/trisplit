@@ -43,10 +43,20 @@ echo "════════ 품질 검증: dbt test ════════"
 
 # 리포트 생성은 파이프라인의 마지막 단계다.
 # 밖에서 따로 호출하면 env.sh 를 안 거쳐 JAVA_HOME 이 없어 죽는다 (실제로 겪었다).
+#
+# 두 가지를 만든다:
+#   마크다운 — AI 상담 입력용 (TC_REPORT_OUT)
+#   HTML     — 사람이 브라우저·폰으로 보는 용도 (TC_HTML_OUT, 인라인 SVG 차트)
 if [ -n "${TC_REPORT_OUT:-}" ]; then
   echo ""
-  echo "════════ 리포트 생성 ════════"
+  echo "════════ 리포트 생성 (마크다운) ════════"
   "$PY" "$LAKEHOUSE/scripts/build_report.py" --out "$TC_REPORT_OUT"
+fi
+
+if [ -n "${TC_HTML_OUT:-}" ]; then
+  echo ""
+  echo "════════ 리포트 생성 (HTML) ════════"
+  "$PY" "$LAKEHOUSE/scripts/build_html.py" --out "$TC_HTML_OUT"
 fi
 
 echo ""

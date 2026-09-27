@@ -24,6 +24,9 @@ Bronze 적재 — Strava 원본 스트림 (per-point 파워 포함).
 """
 from __future__ import annotations
 
+import argparse
+import gzip
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,10 +38,11 @@ from pyspark.sql.types import (
 
 LAKEHOUSE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(LAKEHOUSE_DIR / "scripts"))
+from incremental import delete_rows, plan_incremental, to_uri  # noqa: E402
 from ingest_audit import record as audit_record  # noqa: E402
 from spark_session import CATALOG, get_spark  # noqa: E402
 
-STREAMS_GLOB = str(LAKEHOUSE_DIR / "raw/streams/*.json.gz")
+STREAMS_DIR = LAKEHOUSE_DIR / "raw/streams"
 NS = f"{CATALOG}.bronze"
 TABLE = f"{NS}.streams"
 RUN_TS = datetime.now(tz=timezone.utc)
@@ -85,15 +89,79 @@ STREAM_COLS = [
 ]
 
 
+def count_source_points(files: list[Path]) -> int:
+    """소스에서 기대 포인트 수를 독립적으로 센다.
+
+    trackpoints 는 `<trkpt` 바이트 스캔으로 되지만 스트림은 JSON 이라 파싱이 필요하다.
+    다만 Spark 를 거치지 않고 드라이버에서 직접 세므로 적재 로직과 독립이다 —
+    392파일 20.7MB(gz) 에 맥북 1초 / 서버 추정 4~8초.
+
+    arrays_zip 이 가장 긴 배열에 맞춰 패딩하므로 max 를 쓴다 (적재 로직과 동일 규칙).
+    """
+    total = 0
+    for f in files:
+        try:
+            with gzip.open(f, "rt", encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        streams = d.get("streams") or {}
+        total += max(
+            (len((v or {}).get("data") or []) for v in streams.values()),
+            default=0,
+        )
+    return total
+
+
 def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "--full-refresh",
+        action="store_true",
+        help="증분 대신 전체 재적재 (스키마 변경 후 1회 필요)",
+    )
+    args = ap.parse_args()
+
     spark = get_spark("bronze-streams")
     spark.sparkContext.setLogLevel("ERROR")
     spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {NS}")
 
+    all_files = sorted(STREAMS_DIR.glob("*.json.gz"))
+    plan = plan_incremental(spark, TABLE, all_files, full_refresh=args.full_refresh)
+    print(f"[*] 소스 스트림 {len(all_files):,} 개 — {plan.describe()}")
+
+    if plan.nothing_to_do:
+        print("[*] 변경 없음 — 파싱 건너뜀")
+        n = spark.table(TABLE).count()
+        audit_record(
+            spark, layer="bronze", table_name=TABLE,
+            source_kind="strava_streams", source_count=count_source_points(all_files),
+            loaded_count=n, run_ts=RUN_TS, note=f"{len(all_files)} files (no-op)",
+        )
+        print(f"[✓] {TABLE} — {n:,} 행 (변동 없음)")
+        spark.stop()
+        return 0
+
+    if plan.to_delete:
+        delete_rows(spark, TABLE, plan.to_delete)
+        print(f"[*] 기존 행 삭제: 소스 {len(plan.to_delete)} 개분")
+
     # .json.gz 는 Spark 가 알아서 풀어 읽는다. 파일당 1줄 JSON 이라 multiLine 불필요.
-    df = spark.read.schema(SCHEMA).json(STREAMS_GLOB).filter(F.col("activity_id").isNotNull())
-    n_files = df.count()
-    print(f"[*] 스트림 파일 {n_files:,} 개 읽음")
+    # 이번에 적재할 파일 경로만 명시적으로 넘긴다.
+    paths = [str(x) for x in plan.to_parse]
+    df = (
+        spark.read.schema(SCHEMA).json(paths)
+        .withColumn("_source_file", F.input_file_name())
+        .filter(F.col("activity_id").isNotNull())
+    )
+
+    mtime_df = spark.createDataFrame(
+        [(to_uri(x), float(x.stat().st_mtime)) for x in plan.to_parse],
+        "_source_file string, _source_mtime double",
+    )
+
+    n_files = len(plan.to_parse)
+    print(f"[*] 파싱 대상 {n_files:,} 개")
 
     zipped = F.arrays_zip(
         *[
@@ -110,12 +178,14 @@ def main() -> int:
             "activity_id",
             F.to_date("date").alias("activity_date"),
             F.col("type").alias("activity_type"),
+            F.col("_source_file"),
             F.posexplode(zipped).alias("point_idx", "p"),
         )
         .select(
             "activity_id",
             "activity_date",
             "activity_type",
+            "_source_file",
             "point_idx",
             F.col("p.time").alias("time_offset_s"),
             # latlng 은 [lat, lng] 2원소 배열. 실내 활동엔 아예 없어 NULL 이 된다.
@@ -132,35 +202,29 @@ def main() -> int:
             F.col("p.moving").alias("moving"),
         )
         .withColumn("_ingested_at", F.lit(RUN_TS))
+        .join(mtime_df, "_source_file", "left")
     )
 
-    (
-        points.writeTo(TABLE)
-        .using("iceberg")
-        .partitionedBy(F.years("activity_date"))
-        .createOrReplace()
-    )
+    if plan.table_exists and not args.full_refresh:
+        points.writeTo(TABLE).append()
+    else:
+        (
+            points.writeTo(TABLE)
+            .using("iceberg")
+            .partitionedBy(F.years("activity_date"))
+            .createOrReplace()
+        )
 
     n = spark.table(TABLE).count()
     print(f"[✓] {TABLE} — {n:,} 행 적재")
 
-    # 수집량 = 각 활동의 time 스트림 길이 합 (포인트 수).
-    # arrays_zip 은 가장 긴 배열에 맞춰 패딩하므로 time 이 가장 길다고 가정하지 않고 최댓값을 쓴다.
-    expected_pts = df.select(
-        F.sum(
-            F.greatest(
-                *[
-                    F.coalesce(F.size(F.col(f"streams.{name}.data")), F.lit(0))
-                    for name, _ in STREAM_COLS
-                ]
-            )
-        )
-    ).first()[0] or 0
+    # 수집량은 **소스 전체**를 드라이버에서 독립적으로 센다 (이번에 파싱한 것만이 아니라).
     print()
     audit_record(
         spark, layer="bronze", table_name=TABLE,
-        source_kind="strava_streams", source_count=expected_pts,
-        loaded_count=n, run_ts=RUN_TS, note=f"{n_files} files",
+        source_kind="strava_streams", source_count=count_source_points(all_files),
+        loaded_count=n, run_ts=RUN_TS,
+        note=f"{len(all_files)} files, parsed {n_files}",
     )
 
     print("\n[*] 스트림 커버리지 (이게 핵심 — watts 가 처음으로 per-point 로 남는다)")

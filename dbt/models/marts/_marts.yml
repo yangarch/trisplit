@@ -85,3 +85,81 @@ models:
       - name: implied_ftp
         tests:
           - between: {min_value: 100, max_value: 500}
+
+  - name: int_power_curve_ride
+    description: >
+      라이딩 × 구간별 최고 파워 (Mean Maximal Power). 증분 모델.
+      불완전 윈도우(활동보다 긴 구간)는 제외된다 — 그래서 구간이 길수록 유효 라이딩이 줄어든다.
+    columns:
+      - name: activity_id
+        tests: [not_null]
+      - name: duration_s
+        tests:
+          - not_null
+          - accepted_values:
+              values: [5, 15, 30, 60, 120, 300, 480, 720, 1200, 1800, 3600, 7200, 10800, 14400]
+              quote: false
+      - name: best_watts
+        tests:
+          - not_null
+          - between: {min_value: 1, max_value: 2000}
+
+  - name: mart_power_curve
+    description: 구간별 최고 파워 (전 기간 / 최근 90일). 20분 값은 라이덕 피크파워와 일치 확인됨.
+    tests:
+      - dbt_utils_unique_combination:
+          combination_of_columns: [duration_s, window_label]
+    columns:
+      - name: best_watts
+        tests:
+          - not_null
+          - between: {min_value: 1, max_value: 2000}
+      - name: window_label
+        tests:
+          - accepted_values: {values: ['all_time', 'recent_90d']}
+
+  - name: mart_ftp_estimate
+    description: >
+      FTP 추정 — 20분×0.95 와 CP 모델 두 방법. ftp-log.md 현재값과의 차이를 함께 낸다.
+      ⚠️ 최대 노력 기록이 데이터에 있어야 유효하다. 없으면 하한으로 읽을 것.
+    columns:
+      - name: window_label
+        tests: [unique, not_null]
+      - name: ftp_20min_x095
+        tests:
+          - not_null
+          - between: {min_value: 80, max_value: 500}
+      - name: cp_watts
+        tests:
+          - between: {min_value: 80, max_value: 500}
+      - name: w_prime_joules
+        # W′ 는 통상 5,000~40,000J. 이 범위를 벗어나면 회귀가 깨진 것이다
+        tests:
+          - between: {min_value: 1000, max_value: 60000}
+
+  - name: mart_power_zones
+    description: >
+      파워 존 분포 (Coggan 7존, ftp-log 현재값 기준). 원본 watts 에서 직접 계산.
+      Z1 에는 코스팅·정지(0W)가 포함된다 — 기성 도구와 같은 관행이다.
+    tests:
+      - dbt_utils_unique_combination:
+          combination_of_columns: [activity_id, zone]
+    columns:
+      - name: zone
+        tests:
+          - not_null
+          - accepted_values: {values: [1, 2, 3, 4, 5, 6, 7], quote: false}
+      - name: pct_of_ride
+        tests:
+          - between: {min_value: 0, max_value: 100}
+
+  - name: mart_ride_durability
+    description: >
+      3시간+ 라이딩의 후반/전반 NP 비율. 브레베·장거리에서 "10시간째에 얼마를 내는가" 를 본다.
+    columns:
+      - name: activity_id
+        tests: [unique, not_null]
+      - name: durability_ratio
+        # 0.3 미만이면 사실상 중단, 2.0 초과면 데이터 이상
+        tests:
+          - between: {min_value: 0.3, max_value: 2.0}

@@ -24,6 +24,11 @@ vars:
 models:
   training_companion:
     +file_format: iceberg
+    intermediate:
+      # 파워 커브는 여러 마트가 재사용하므로 테이블로 물질화한다.
+      # ephemeral 로 두면 14개 윈도우 연산이 마트마다 반복된다.
+      +materialized: table
+      +schema: gold
     staging:
       # Iceberg 의 hadoop 카탈로그는 뷰를 지원하지 않는다
       # ("Replacing a view is not supported by catalog: tc").
