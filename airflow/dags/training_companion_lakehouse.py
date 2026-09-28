@@ -7,6 +7,7 @@ Airflow 로 옮기는 실익이 여기 있다 — 순서가 아니라 **의존 �
 
                         fetch_strava  (Strava 신규 활동 → raw-gpx)
                               │  (Bronze 세 개 모두의 상류)
+                              ├─→ fetch_streams (per-point 파워 → raw/streams) ─→ bronze_streams
                               ▼
     bronze_activities ──┬─→ silver_activities ─┬─→ silver_trackpoints ──┐
     bronze_trackpoints ─┤                      └─→ silver_laps_splits ──┤
@@ -24,8 +25,10 @@ Strava 수집(fetch.py sync)은 원래 맥의 launchd 가 22:00 에 돌렸다. �
    무효가 되므로 **이 DAG 만 수집한다** (맥 launchd 는 disable). max_active_runs=1 도
    같은 이유로 필요하다 — 두 실행이 동시에 토큰을 갱신하면 안 된다.
 
-스트림 재수집(fetch_streams.py)은 여기 없다.
-Strava 일일 한도에 묶여 있어 주기와 실패 성격이 다르다 — 별도 DAG 가 맞다.
+스트림 수집(fetch_streams.py)도 이 DAG 안에 있다. 처음엔 과거 392건 백필이 일일 한도에
+걸리는 작업이라 따로 뒀는데, 그 뒤로 **아무도 돌리지 않아** 새 라이딩의 파워가 조용히 빠졌다
+(9/13·9/19 6건). 백필이 끝난 지금은 신규 라이딩 몇 건이라 한도와 무관하다.
+한도에 걸려도 상태를 저장하고 0 으로 끝나며, 다음 실행이 이어 받는다.
 
 메모리 — 의존 그래프와 동시 실행은 별개다:
   Docker 전체 가용이 7.7GB 인데 Airflow 컴포넌트가 이미 1.5~2GB 를 쓴다.
@@ -40,6 +43,8 @@ from __future__ import annotations
 import pendulum
 from airflow.sdk import DAG
 from airflow.providers.standard.operators.bash import BashOperator
+
+from tc_alerts import notify_failure
 
 # 경로는 **런타임 셸에서** $TC_ROOT 로 푼다. DAG 파싱 시점에 os.environ 을 읽어
 # 값을 복제하면 안 된다 — 직렬화된 DAG 에 옛 값이 굳어서, compose 설정을 고쳐도
@@ -74,7 +79,12 @@ with DAG(
     # 3g 짜리 Spark 드라이버가 셋씩 뜨면 컨테이너가 죽는다.
     max_active_tasks=1,
     max_active_runs=1,
-    default_args={"retries": 1, "retry_delay": pendulum.duration(minutes=5)},
+    default_args={
+        "retries": 1,
+        "retry_delay": pendulum.duration(minutes=5),
+        # 최종 실패 시 폰으로 (tc_alerts.py). 폴백이 없으니 알리지 않으면 조용히 낡는다.
+        "on_failure_callback": notify_failure,
+    },
     tags=["lakehouse", "iceberg", "dbt"],
 ) as dag:
 
@@ -83,6 +93,12 @@ with DAG(
     fetch_strava = BashOperator(
         task_id="fetch_strava",
         bash_command='python "$TC_ROOT/activities/strava/api/fetch.py" sync',
+    )
+
+    # fetch_strava 가 떨어뜨린 활동 JSON 을 보고 파워 있는 활동만 고른다 → 반드시 그 뒤.
+    fetch_streams = BashOperator(
+        task_id="fetch_streams",
+        bash_command=f'python "{LAKEHOUSE}/ingest/fetch_streams.py" fetch',
     )
 
     # ── Bronze — 서로 독립. 소스가 다르다. ──
@@ -143,7 +159,8 @@ with DAG(
     )
 
     # ── 의존 그래프 ──
-    fetch_strava >> [bronze_activities, bronze_trackpoints, bronze_streams]
+    fetch_strava >> [bronze_activities, bronze_trackpoints]
+    fetch_strava >> fetch_streams >> bronze_streams
     bronze_activities >> silver_activities
 
     # 시계열 통합은 두 Bronze 소스와 silver_activities(start_ts_utc) 를 모두 쓴다
