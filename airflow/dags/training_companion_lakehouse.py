@@ -5,6 +5,9 @@ training-companion 레이크하우스 파이프라인 DAG.
 Bronze 세 개는 서로 독립이고, Silver 두 개도 activities 만 끝나면 병렬로 갈 수 있다.
 Airflow 로 옮기는 실익이 여기 있다 — 순서가 아니라 **의존 그래프**를 선언한다.
 
+                        fetch_strava  (Strava 신규 활동 → raw-gpx)
+                              │  (Bronze 세 개 모두의 상류)
+                              ▼
     bronze_activities ──┬─→ silver_activities ─┬─→ silver_trackpoints ──┐
     bronze_trackpoints ─┤                      └─→ silver_laps_splits ──┤
     bronze_streams ─────┘                                               │
@@ -14,6 +17,12 @@ Airflow 로 옮기는 실익이 여기 있다 — 순서가 아니라 **의존 �
 
   silver_trackpoints 는 bronze_streams + bronze_trackpoints + silver_activities 를 모두 쓴다
   (스트림 우선 통합 + start_ts_utc 로 offset 정규화).
+
+Strava 수집(fetch.py sync)은 원래 맥의 launchd 가 22:00 에 돌렸다. 홈서버로 옮기면서
+이 DAG 의 첫 태스크가 됐다 — 수집과 적재가 한 실행 안에서 의존 관계로 묶인다.
+⚠️ Strava 는 토큰 갱신 때 refresh_token 을 회전시킨다. 수집하는 곳이 둘이면 한쪽 토큰이
+   무효가 되므로 **이 DAG 만 수집한다** (맥 launchd 는 disable). max_active_runs=1 도
+   같은 이유로 필요하다 — 두 실행이 동시에 토큰을 갱신하면 안 된다.
 
 스트림 재수집(fetch_streams.py)은 여기 없다.
 Strava 일일 한도에 묶여 있어 주기와 실패 성격이 다르다 — 별도 DAG 가 맞다.
@@ -58,9 +67,8 @@ def spark_task(dag: DAG, task_id: str, script: str, args: str = "") -> BashOpera
 with DAG(
     dag_id="training_companion_lakehouse",
     description="Strava 원본 → Iceberg 메달리온 → dbt 마트 + 품질 검증",
-    # 기존 launchd 동기화가 매일 22:00 에 돌아 raw-gpx 를 채운다.
-    # 그 뒤에 도는 게 맞으므로 23:00 (KST) 으로 둔다.
-    schedule="0 23 * * *",
+    # 수집이 이 DAG 안으로 들어왔으므로 launchd 가 돌던 22:00 (KST) 에 그대로 시작한다.
+    schedule="0 22 * * *",
     start_date=pendulum.datetime(2026, 9, 1, tz="Asia/Seoul"),
     catchup=False,
     # 3g 짜리 Spark 드라이버가 셋씩 뜨면 컨테이너가 죽는다.
@@ -69,6 +77,13 @@ with DAG(
     default_args={"retries": 1, "retry_delay": pendulum.duration(minutes=5)},
     tags=["lakehouse", "iceberg", "dbt"],
 ) as dag:
+
+    # ── 수집 ── 표준 라이브러리만 쓴다 (Spark 불필요).
+    # 경로가 스크립트 기준 상대경로라 cd 없이 호출해도 된다.
+    fetch_strava = BashOperator(
+        task_id="fetch_strava",
+        bash_command='python "$TC_ROOT/activities/strava/api/fetch.py" sync',
+    )
 
     # ── Bronze — 서로 독립. 소스가 다르다. ──
     bronze_activities = spark_task(dag, "bronze_activities", "ingest/bronze_activities.py")
@@ -128,6 +143,7 @@ with DAG(
     )
 
     # ── 의존 그래프 ──
+    fetch_strava >> [bronze_activities, bronze_trackpoints, bronze_streams]
     bronze_activities >> silver_activities
 
     # 시계열 통합은 두 Bronze 소스와 silver_activities(start_ts_utc) 를 모두 쓴다
