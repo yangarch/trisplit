@@ -100,8 +100,9 @@ def has_riduck(detail: dict) -> bool:
 
 
 def expects_riduck(detail: dict) -> bool:
-    """라이덕이 분석할 활동인가 — 파워가 있는 라이딩만. 수영·러닝은 기다릴 이유가 없다."""
-    return SPORT_MAP.get(detail.get("type")) == "cycling" and bool(detail.get("device_watts"))
+    """라이덕이 분석할 활동인가 — 라이딩 전부 (파워계 유무 무관, 라이덕은 둘 다 분석한다).
+    수영·러닝은 기다릴 이유가 없다. 라이덕이 안 붙는 라이딩이 있어도 센서 상한(20분)에서 넘어간다."""
+    return SPORT_MAP.get(detail.get("type")) == "cycling"
 
 
 def list_activities(client: StravaClient, after_epoch: int) -> list[dict]:
@@ -264,7 +265,7 @@ def cmd_one(args: argparse.Namespace) -> int:
 def cmd_check_riduck(args: argparse.Namespace) -> int:
     """모든 활동이 '준비됨' 이면 0, 하나라도 라이덕을 기다리는 중이면 1.
 
-    준비됨 = 라이덕 대상이 아니거나(수영·러닝·파워 없는 라이딩), 이미 분석이 붙었음.
+    준비됨 = 라이덕 대상이 아니거나(수영·러닝 등 라이딩 외), 이미 분석이 붙었음.
     Airflow BashSensor 가 종료코드로 판정한다.
     """
     client = StravaClient(CONFIG_PATH)

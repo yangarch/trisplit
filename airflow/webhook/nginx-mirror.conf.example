@@ -1,0 +1,38 @@
+# Strava 웹훅을 기존 서비스에서 복제해 이 파이프라인의 수신기로도 보내는 nginx 설정.
+#
+# 전제: Strava 앱의 웹훅 구독(앱당 하나)은 이미 다른 서비스가 가지고 있고,
+#       그 서비스는 메인 서버 nginx 뒤에 있다. 수신기는 같은 LAN 의 파이프라인 서버에 있다.
+#
+# mirror 는 요청을 복사해 서브요청으로 보내고 **그 응답은 버린다.**
+# Strava 에 대한 응답은 계속 원래 서비스가 한다 — 원래 서비스 코드는 건드리지 않는다.
+#
+# 적용: 원래 서비스의 server 블록(443)에서
+#   1) 기존 웹훅 location 안에 mirror 두 줄을 추가하고
+#   2) 내부 location 하나를 추가한 뒤
+#   sudo nginx -t && sudo systemctl reload nginx
+#
+# 확인: 메인 서버에서  curl -s http://<파이프라인 서버 LAN IP>:8091/healthz  → {"ok": true, ...}
+
+server {
+    # ... (기존 server_name / listen 443 ssl / certbot 설정 그대로) ...
+
+    # 1) 기존 웹훅 location — 원래 있던 지시어는 그대로 두고 두 줄만 추가
+    location = /webhook {
+        mirror /_strava_mirror;          # 추가
+        mirror_request_body on;          # 추가 (POST 본문도 복제)
+
+        # ... 기존 proxy_pass 등 그대로 ...
+    }
+
+    # 2) 복제 대상 — 외부에서 직접 부를 수 없게 internal
+    location = /_strava_mirror {
+        internal;
+        proxy_pass http://<파이프라인 서버 LAN IP>:8091/strava/webhook;
+        proxy_set_header Content-Type $content_type;
+        # 파이프라인 서버가 꺼져 있어도 원래 서비스가 영향받지 않게 짧게.
+        # (Strava 는 2초 안에 응답을 요구한다 — 응답은 원래 서비스가 하지만 여유를 둔다)
+        proxy_connect_timeout 1s;
+        proxy_send_timeout 2s;
+        proxy_read_timeout 2s;
+    }
+}
