@@ -3,9 +3,9 @@
 Strava per-point 스트림 재수집 — Bronze 레이어용.
 
 왜 별도 스크립트인가:
-  기존 `activities/strava/api/fetch.py` 는 launchd 가 매일 22:00 에 돌리는 운영 경로다.
-  거기에 스트림 수집을 끼워 넣으면 매일 동기화가 느려지고 실패 지점이 늘어난다.
-  그래서 기존 파일은 손대지 않고, 클라이언트만 import 해서 재사용한다.
+  활동 수집(`ingest/strava/fetch.py`)은 매 실행 도는 운영 경로다.
+  거기에 스트림 수집을 끼워 넣으면 동기화가 느려지고 실패 지점이 늘어난다.
+  그래서 클라이언트만 import 해서 재사용하고, DAG 에서 별도 태스크로 돈다.
 
 왜 필요한가:
   `gpx_writer.py:53` 이 "GPX 표준 확장이 없다"는 이유로 per-point watts 를 버린다.
@@ -54,7 +54,8 @@ STREAM_KEYS = (
     "time,latlng,distance,altitude,velocity_smooth,heartrate,cadence,watts,temp,grade_smooth,moving"
 )
 
-sys.path.insert(0, str(STRAVA_API_DIR))
+# 클라이언트 코드는 이 저장소(ingest/strava/)에, 토큰(config.json)은 데이터 폴더에 있다.
+sys.path.insert(0, str(Path(__file__).resolve().parent / "strava"))
 from strava_client import StravaClient, StravaError  # noqa: E402
 
 

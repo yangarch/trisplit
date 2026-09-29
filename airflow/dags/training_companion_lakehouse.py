@@ -21,6 +21,10 @@ Airflow 로 옮기는 실익이 여기 있다 — 순서가 아니라 **의존 �
 
 Strava 수집(fetch.py sync)은 원래 맥의 launchd 가 22:00 에 돌렸다. 홈서버로 옮기면서
 이 DAG 의 첫 태스크가 됐다 — 수집과 적재가 한 실행 안에서 의존 관계로 묶인다.
+
+실행 경로는 둘이다:
+  22:00 예약     — 보정 실행. 최근 이틀을 다시 받아 늦게 붙은 분석·수정·놓친 이벤트를 메운다.
+  strava_event  — 업로드 웹훅이 트리거. 라이덕 분석을 기다렸다가 이 DAG 를 실행한다.
 ⚠️ Strava 는 토큰 갱신 때 refresh_token 을 회전시킨다. 수집하는 곳이 둘이면 한쪽 토큰이
    무효가 되므로 **이 DAG 만 수집한다** (맥 launchd 는 disable). max_active_runs=1 도
    같은 이유로 필요하다 — 두 실행이 동시에 토큰을 갱신하면 안 된다.
@@ -89,10 +93,16 @@ with DAG(
 ) as dag:
 
     # ── 수집 ── 표준 라이브러리만 쓴다 (Spark 불필요).
-    # 경로가 스크립트 기준 상대경로라 cd 없이 호출해도 된다.
+    # 22:00 예약 실행은 **최근 이틀을 이미 받은 것까지 다시 받는다** (보정 실행).
+    #   웹훅(strava_event DAG)은 업로드 직후라 라이덕 분석·제목 수정이 빠질 수 있고,
+    #   서버가 꺼져 있던 동안의 이벤트는 아예 놓친다. 야간 실행이 그 빈틈을 메운다.
+    # 이벤트·수동 트리거 실행은 새 활동만 받는다 (빠르게).
     fetch_strava = BashOperator(
         task_id="fetch_strava",
-        bash_command='python "$TC_ROOT/activities/strava/api/fetch.py" sync',
+        bash_command=(
+            f'python "{LAKEHOUSE}/ingest/strava/fetch.py" sync'
+            '{{ " --since 2d --refresh" if dag_run.run_type == "scheduled" else "" }}'
+        ),
     )
 
     # fetch_strava 가 떨어뜨린 활동 JSON 을 보고 파워 있는 활동만 고른다 → 반드시 그 뒤.

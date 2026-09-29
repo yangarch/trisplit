@@ -1,0 +1,11 @@
+{
+  "client_id": "",
+  "client_secret": "",
+  "access_token": "",
+  "refresh_token": "",
+  "expires_at": 0,
+  "athlete_id": 0,
+  "scope": "",
+  "_note": "이 파일은 템플릿입니다. config.json 으로 복사 후 client_id/client_secret 만 채우고 oauth.py 실행하면 나머지 값은 자동으로 채워집니다. config.json 은 $TC_ROOT/activities/strava/api/ 에 두고 커밋하지 않는다.",
+  "_redirect_uri": "http://localhost:8721/callback (oauth.py 가 사용. Strava 앱의 Authorization Callback Domain 이 localhost 여야 함)"
+}
