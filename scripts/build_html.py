@@ -149,6 +149,45 @@ def main() -> int:
         w(f'<div class="kpi"><div class="n">{escape(val)}</div><div class="l">{escape(label)}</div></div>')
     w("</div>")
 
+    # ── 증상 · 피팅 ── (기록이 있을 때만)
+    knee = q("""SELECT ride_date, knee_medial_l, name, setup_since
+                FROM tc.gold.mart_symptom_ride
+                WHERE knee_medial_l IS NOT NULL ORDER BY ride_date""")
+    if knee:
+        changes = q("""SELECT effective_date,
+                              concat_ws(', ', collect_list(concat(item,
+                                  CASE WHEN side IS NOT NULL AND trim(side) NOT IN ('', 'None') THEN concat('(', side, ')') ELSE '' END,
+                                  ' ', after))) label
+                       FROM tc.gold.fitting_changes
+                       WHERE status IN ('적용','원복') AND target IN ('chichi','신발')
+                       GROUP BY effective_date ORDER BY effective_date""")
+        marks = [(str(r["effective_date"]), str(i + 1)) for i, r in enumerate(changes)]
+        w("<h2>무릎 (좌 내측) · 피팅 <span class='meta'>증상 로그 × 피팅 변경</span></h2>")
+        w(f'<div class="card">{sc.symptom_timeline([(str(r["ride_date"]), float(r["knee_medial_l"]), r["name"]) for r in knee], marks)}</div>')
+        w('<div class="note">점 = 기록한 라이딩의 강도 (0 봤는데 없음 · 4 자세·페이스를 바꿈 · 7 중단). '
+          '<b>기록 안 한 라이딩은 점이 없다</b> — 0 과 다르다. 점선 = 피팅 변경 적용일.</div>')
+
+        ep = q("SELECT * FROM tc.gold.mart_fitting_epochs ORDER BY epoch_start NULLS FIRST")
+        num_of = {m[0]: m[1] for m in marks}
+        w(table(["구간", "변경", "라이딩", "무릎 기록", "평균", "최대", "4+",
+                 "고토크 분/h", "클라임 rpm"],
+                [[("기준" if r["epoch_start"] is None else f'[{num_of.get(str(r["epoch_start"]), "")}] {r["epoch_start"]}'),
+                  (r["changes"] or "—")[:28] + (" ⚠️동시" if (r["n_changes"] or 1) > 1 else ""),
+                  r["rides"], r["knee_rides"], f(r["knee_avg"]), r["knee_max"], r["knee_ge4_rides"],
+                  f(r["grind_min_per_h_avg"]), f(r["climb_cadence_avg"], 0)] for r in ep]))
+
+        cmp_ = q("""SELECT CASE WHEN knee_medial_l >= 4 THEN '4 이상' ELSE '0~3' END grp,
+                           count(*) n, avg(grind_min_per_h) g, avg(climb_cadence) cc,
+                           avg(distance_km) km, avg(intensity_factor) iff
+                    FROM tc.gold.mart_symptom_ride WHERE knee_medial_l IS NOT NULL
+                    GROUP BY 1 ORDER BY 1""")
+        w("<h3>무릎 강도별 라이딩 부하</h3>")
+        w(table(["무릎 강도", "라이딩", "고토크 분/h", "클라임 rpm", "평균 km", "IF"],
+                [[r["grp"], r["n"], f(r["g"]), f(r["cc"], 0), f(r["km"], 0), f(r["iff"], 2)] for r in cmp_]))
+        w('<div class="note">고토크 = 케이던스 75rpm 미만이면서 FTP 75% 이상인 시간. '
+          '노트의 가설("클라임 고토크에서 자극, 케이던스 90+ 면 괜찮다")을 숫자로 본 것이다. '
+          '기록 수가 적어 경향으로만 읽는다 — 판단은 대화에서.</div>')
+
     # ── 파워 커브 ──
     w("<h2>파워 커브</h2>")
     curve = q("SELECT * FROM tc.gold.mart_power_curve")

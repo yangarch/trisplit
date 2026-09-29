@@ -276,3 +276,82 @@ def year_bars(rows: list[tuple[str, float, float]], *, width: int = 760, height:
             )
     out.append("</svg>")
     return "".join(out)
+
+
+def symptom_timeline(
+    points: list[tuple[str, float, str]],
+    markers: list[tuple[str, str]],
+    *,
+    width: int = 760,
+    height: int = 230,
+) -> str:
+    """증상 강도 시계열 + 피팅 변경 표시.
+
+    points  = [(YYYY-MM-DD, 강도 0~10, 설명)]   — 기록한 라이딩만 (미기록은 점이 없다)
+    markers = [(YYYY-MM-DD, 번호 "1"·"2"…)]     — 피팅 변경 적용일. 세로 점선 + 번호 배지.
+
+    변경 이름을 차트 안에 쓰면 폰 폭에서 서로 겹친다(지속력 차트에서 겪었다) —
+    번호만 찍고 이름은 아래 표로 뺀다.
+    """
+    from datetime import date as _d
+
+    if not points:
+        return '<p class="empty">기록 없음</p>'
+    pad_l, pad_r, pad_t, pad_b = 34, 14, 44, 30   # 위쪽은 변경 번호 두 줄 자리
+    iw, ih = width - pad_l - pad_r, height - pad_t - pad_b
+    days = [_d.fromisoformat(p[0]) for p in points] + [_d.fromisoformat(m[0]) for m in markers]
+    d0, d1 = min(days), max(days)
+    span = max((d1 - d0).days, 1)
+
+    def x(ds: str) -> float:
+        return pad_l + (_d.fromisoformat(ds) - d0).days / span * iw
+
+    def y(v: float) -> float:
+        return pad_t + ih - v / 10 * ih
+
+    out = [_open(width, height, "symptoms")]
+    # 강도 기준선: 0 / 4(자세를 바꿈) / 7(중단)
+    for v, lab in ((0, "0"), (4, "4"), (7, "7"), (10, "10")):
+        out.append(f'<line class="grid" x1="{pad_l}" y1="{y(v):.1f}" x2="{width-pad_r}" y2="{y(v):.1f}"/>')
+        out.append(f'<text class="axis" x="{pad_l-6}" y="{y(v)+4:.1f}" text-anchor="end">{lab}</text>')
+    # 월 눈금
+    m = _d(d0.year, d0.month, 1)
+    while m <= d1:
+        if m >= d0:
+            xm = x(m.isoformat())
+            out.append(f'<text class="axis" x="{xm:.1f}" y="{pad_t+ih+18}" text-anchor="middle">{m.month}월</text>')
+        m = _d(m.year + (m.month // 12), m.month % 12 + 1, 1)
+    # 피팅 변경 — 며칠 간격으로 몰리면(5월 클릿 조정처럼) 번호가 겹친다.
+    # 직전 번호와 가까우면 줄을 바꿔 위아래로 번갈아 놓는다 (지속력 차트 라벨과 같은 처리).
+    rows_y = (pad_t - 24, pad_t - 2)
+    last_x = [-1e9, -1e9]
+    min_gap = 24   # 배지 지름 22 + 여유
+    for ds, lab in markers:
+        xm = x(ds)
+        row = 0 if xm - last_x[0] >= min_gap else (1 if xm - last_x[1] >= min_gap else
+                                                    (0 if last_x[0] <= last_x[1] else 1))
+        last_x[row] = xm
+        out.append(
+            f'<line x1="{xm:.1f}" y1="{rows_y[row]+4}" x2="{xm:.1f}" y2="{pad_t+ih}" '
+            f'stroke="var(--s1)" stroke-width="1.2" stroke-dasharray="3 3"><title>{escape(ds)}</title></line>'
+        )
+        # 원문자(①)는 가는 선이라 폰 폭으로 축소되면 빈 동그라미처럼 보인다 → 채운 원 + 숫자 배지
+        cy = rows_y[row] - 5
+        out.append(
+            f'<g><title>{escape(ds)}</title>'
+            f'<circle cx="{xm:.1f}" cy="{cy}" r="11" fill="var(--s1)"/>'
+            f'<text x="{xm:.1f}" y="{cy + 5}" text-anchor="middle" fill="var(--card)" '
+            f'font-size="14" font-weight="700">{escape(lab)}</text></g>'
+        )
+    # 추세선 (기록 순서대로 잇는다)
+    pts = sorted(points)
+    path = " ".join(f"{'M' if i == 0 else 'L'}{x(d):.1f},{y(v):.1f}" for i, (d, v, _) in enumerate(pts))
+    out.append(f'<path d="{path}" fill="none" stroke="var(--muted)" stroke-width="1" opacity=".5"/>')
+    for d, v, desc in pts:
+        cls = "var(--good)" if v <= 1 else ("var(--warn)" if v <= 3 else "var(--s0)")
+        out.append(
+            f'<circle cx="{x(d):.1f}" cy="{y(v):.1f}" r="4.5" fill="{cls}">'
+            f"<title>{escape(d)} 강도 {_fmt(v)} — {escape(desc)}</title></circle>"
+        )
+    out.append("</svg>")
+    return "".join(out)

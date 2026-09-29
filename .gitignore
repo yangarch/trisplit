@@ -13,6 +13,9 @@ dbt/dbt_packages/
 dbt/.user.yml
 # ftp-log.md 에서 생성
 dbt/seeds/ftp_log.csv
+# 증상 로그·피팅 변경 이력(개인 기록)에서 생성
+dbt/seeds/symptom_log.csv
+dbt/seeds/fitting_changes.csv
 
 # 상태·시크릿
 ingest/streams_state.json

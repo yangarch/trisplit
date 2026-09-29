@@ -21,6 +21,26 @@ vars:
   np_bias_max_w: 15             # NP 직접계산 vs Strava 평균 편향 상한 (측정값 8.04W)
   min_power_coverage_pct: 95    # 파워 라이딩의 per-point watts 커버리지 하한
 
+  # 증상 비교용 부하 정의 (int_ride_load). 무릎 내측 건염 노트의 가설
+  # "클라임 고토크·저케이던스에서 자극" 을 숫자로 옮긴 것이라, 바꾸면 이력이 git 에 남게 여기 둔다.
+  grind_cadence_max: 75         # 이 케이던스 미만이면서
+  grind_ftp_pct: 75             # FTP 의 이 % 이상 파워 → "저케이던스 고토크" 초
+  climb_grade_min: 4            # 이 경사(%) 이상 → 클라임 초
+
+seeds:
+  training_companion:
+    # 증상·피팅 기록은 개인 파일이 없으면 헤더만 있는 빈 시드가 된다.
+    # 행이 없으면 타입을 추론할 수 없어 전부 문자열이 되므로 명시한다.
+    symptom_log:
+      +column_types:
+        symptom_date: date
+        activity_id: bigint
+        severity: int
+        next_day: int
+    fitting_changes:
+      +column_types:
+        effective_date: date
+
 models:
   training_companion:
     +file_format: iceberg

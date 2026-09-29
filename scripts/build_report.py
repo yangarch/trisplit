@@ -224,6 +224,43 @@ def main() -> int:
                   WHERE d.is_duplicate ORDER BY d.start_date_key"""):
         w(f"| {r['day']} | {r['pdev']} {fmt(r['pkm'])}km | {r['ddev']} {fmt(r['dkm'])}km |")
     w("")
+
+    # ── 증상 · 피팅 ── (기록이 있을 때만). 상담 때 "지난번 세팅 바꾼 뒤 어땠지" 를 바로 보게.
+    ep = q("SELECT * FROM tc.gold.mart_fitting_epochs ORDER BY epoch_start NULLS FIRST")
+    recent = q("""SELECT ride_date, name, distance_km, knee_medial_l, knee_medial_l_next, saddle,
+                         hand_numb, triceps_shoulder, low_back, grind_min_per_h, climb_cadence, confounders
+                  FROM tc.gold.mart_symptom_ride WHERE symptom_rows > 0
+                  ORDER BY ride_date DESC LIMIT 8""")
+    if ep or recent:
+        w("## 6. 증상 · 피팅")
+        w("")
+        w("원본: `body/symptoms/log.md` (증상, 한 부위 한 줄) · `equipment/bikes/fitting/changes.md` (피팅 변경).")
+        w("무릎 수치는 **기록한 라이딩만**으로 낸다 — 미기록은 0 이 아니다. "
+          "고토크 = 케이던스 75rpm 미만 × FTP 75% 이상인 시간(분/시간).")
+        w("")
+        w("### 피팅 구간별 무릎 (좌 내측)")
+        w("")
+        w("| 구간 시작 | 변경 | 라이딩 | 무릎 기록 | 평균 | 최대 | 4+ | 고토크 분/h | 클라임 rpm |")
+        w("|:-:|---|---:|---:|---:|---:|---:|---:|---:|")
+        for r in ep:
+            flag = " ⚠️동시 변경" if (r["n_changes"] or 1) > 1 else ""
+            w(f"| {r['epoch_start'] or '기준'} | {(r['changes'] or '—')}{flag} | {r['rides']} | "
+              f"{r['knee_rides']} | {fmt(r['knee_avg'])} | {r['knee_max'] if r['knee_max'] is not None else '·'} | "
+              f"{r['knee_ge4_rides']} | {fmt(r['grind_min_per_h_avg'])} | {fmt(r['climb_cadence_avg'], 0)} |")
+        w("")
+        if recent:
+            w("### 최근 기록한 라이딩")
+            w("")
+            w("| 일자 | 라이딩 | km | 무릎 | 다음날 | 안장 | 손 | 삼두어깨 | 허리 | 고토크 분/h | 클라임 rpm | 오염 |")
+            w("|:-:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+            d = lambda v: "·" if v is None else str(v)  # noqa: E731
+            for r in recent:
+                w(f"| {r['ride_date']} | {r['name'][:18]} | {fmt(r['distance_km'], 0)} | {d(r['knee_medial_l'])} | "
+                  f"{d(r['knee_medial_l_next'])} | {d(r['saddle'])} | {d(r['hand_numb'])} | "
+                  f"{d(r['triceps_shoulder'])} | {d(r['low_back'])} | {fmt(r['grind_min_per_h'])} | "
+                  f"{fmt(r['climb_cadence'], 0)} | {r['confounders'] or ''} |")
+            w("")
+
     w("---")
     w("")
     w("> 생성: `lakehouse/scripts/build_report.py` — Bronze/Silver/Gold(Iceberg) + dbt 마트 기반.")

@@ -13,8 +13,8 @@ Airflow 로 옮기는 실익이 여기 있다 — 순서가 아니라 **의존 �
     bronze_trackpoints ─┤                      └─→ silver_laps_splits ──┤
     bronze_streams ─────┘                                               │
                                                                         ▼
-                                              dbt_seed → dbt_run → dbt_test ─┬─→ build_report
-                                                                             └─→ build_html
+                  export_ftp_seed → export_body_seeds → dbt_seed → dbt_run → dbt_test ─┬─→ build_report
+                                                                                       └─→ build_html
 
   silver_trackpoints 는 bronze_streams + bronze_trackpoints + silver_activities 를 모두 쓴다
   (스트림 우선 통합 + start_ts_utc 로 offset 정규화).
@@ -129,6 +129,14 @@ with DAG(
         env=TASK_ENV,
         append_env=True,
     )
+    # 증상 로그·피팅 변경 이력도 사람이 대화하며 고치는 마크다운이다 — 같은 이유로 매번 시드를 뽑는다.
+    # 형식이 깨진 행은 여기서 실패한다 (조용히 버리면 "기록했는데 분석에 안 나오는" 상태).
+    export_body = BashOperator(
+        task_id="export_body_seeds",
+        bash_command=f'python "{LAKEHOUSE}/scripts/export_body_seeds.py"',
+        env=TASK_ENV,
+        append_env=True,
+    )
     dbt_seed = BashOperator(
         task_id="dbt_seed",
         bash_command=f'cd "{LAKEHOUSE}/dbt" && dbt seed',
@@ -178,5 +186,5 @@ with DAG(
 
     silver_activities >> silver_laps_splits
 
-    [silver_trackpoints, silver_laps_splits] >> export_ftp >> dbt_seed >> dbt_run >> dbt_test
+    [silver_trackpoints, silver_laps_splits] >> export_ftp >> export_body >> dbt_seed >> dbt_run >> dbt_test
     dbt_test >> [build_report, build_html]

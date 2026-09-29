@@ -163,3 +163,34 @@ models:
         # 0.3 미만이면 사실상 중단, 2.0 초과면 데이터 이상
         tests:
           - between: {min_value: 0.3, max_value: 2.0}
+
+  - name: int_ride_load
+    description: >
+      라이딩별 무릎 부하 — 저케이던스 고토크(grind)·클라임 시간·클라임 케이던스. 증분 모델.
+      기준값은 dbt_project.yml vars (grind_cadence_max / grind_ftp_pct / climb_grade_min).
+    columns:
+      - name: activity_id
+        tests: [unique, not_null]
+      - name: grind_s
+        tests:
+          - not_null
+          - between: {min_value: 0, max_value: 86400}
+
+  - name: mart_symptom_ride
+    description: >
+      증상 기록 시작일 이후 사이클 라이딩 전부 × 그날 증상 · 부하 · 피팅 세팅 구간.
+      증상 미기록 라이딩도 포함(symptom_rows = 0) — 0 과 미기록을 구분한다.
+    columns:
+      - name: activity_id
+        tests: [unique, not_null]
+      - name: knee_medial_l
+        tests:
+          - between: {min_value: 0, max_value: 10}
+      - name: symptom_rows
+        tests: [not_null]
+
+  - name: mart_fitting_epochs
+    description: 피팅 세팅 구간별 무릎 증상(기록 라이딩만)과 부하 요약. 같은 날 여러 변경이면 n_changes > 1.
+    columns:
+      - name: epoch
+        tests: [unique, not_null]
