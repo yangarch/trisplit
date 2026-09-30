@@ -194,3 +194,31 @@ models:
     columns:
       - name: epoch
         tests: [unique, not_null]
+
+  - name: mart_activity_feed
+    description: 활동 1건 = 1행, 종목 무관. 최근 운동 목록 · 방금 운동 반영 확인용. 종목별 핵심 지표 포함.
+    columns:
+      - name: activity_id
+        tests: [unique, not_null]
+      - name: sport
+        tests:
+          - accepted_values: {values: ['cycling', 'swimming', 'running', 'walking', 'other']}
+
+  - name: mart_training_status
+    description: 종목별 최근 4주 vs 직전 4주 · 마지막 운동 후 경과일. "오늘" 은 KST (macros/today_kst.sql).
+    columns:
+      - name: sport
+        tests:
+          - unique
+          - not_null
+          - accepted_values: {values: ['cycling', 'swimming', 'running']}
+
+  - name: mart_period_summary
+    description: 월 · 연 · 전체 × 종목 누적. 기록 페이지(records.html)용.
+    tests:
+      - dbt_utils_unique_combination:
+          combination_of_columns: [period_type, period, sport]
+    columns:
+      - name: period_type
+        tests:
+          - accepted_values: {values: ['month', 'year', 'all']}

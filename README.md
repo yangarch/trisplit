@@ -22,9 +22,9 @@ Gold 마트가 94 개 지표에서 같은 숫자를 낸다는 것을 셀 단위�
 | 수집 | 활동 · per-point 스트림, 업로드 웹훅 | Strava API (표준 라이브러리) |
 | Bronze | 원본 활동·랩·스플릿·트랙포인트·스트림 적재 (증분) | PySpark → Iceberg |
 | Silver | 정규화, 중복 판정, 두 시계열 소스 통합 | PySpark |
-| Gold | 종목별 지표 · 파워 분석 · 증상×부하 모델 14 개 | dbt (`method: session`) |
-| 품질 | 수집량 대비 적재량, 임계값, 스키마, 값 회귀 | dbt test 78 개 |
-| 리포트 | 마크다운(상담 입력) + HTML(인라인 SVG 차트) | Python, nginx |
+| Gold | 종목별 지표 · 파워 분석 · 증상×부하 · 현황 모델 17 개 | dbt (`method: session`) |
+| 품질 | 수집량 대비 적재량, 임계값, 스키마, 값 회귀 | dbt test 86 개 |
+| 리포트 | 마크다운(상담 입력) + HTML 두 페이지 — 「지금」(전 종목 현황·최근 운동) · 「기록」(월·연·전체) | Python, 인라인 SVG, nginx |
 | 운영 | 의존 그래프 · 스케줄 · 이벤트 트리거 · 실패 알림 | Airflow 3 (Docker Compose, 홈서버) |
 
 ## 규모
@@ -313,7 +313,7 @@ Airflow 3 의 기본 인증은 `SimpleAuthManager` 라 `airflow users create`(FA
 ingest/strava/   수집 — Strava 활동 수집기 · 클라이언트 · OAuth
 ingest/          Bronze — 원본 → Iceberg (증분), 스트림 수집, 적재 감사 기록
 transform/       Silver — 정규화·중복 판정·시계열 통합
-dbt/             Gold   — 모델 14개 + 테스트 78개
+dbt/             Gold   — 모델 17개 + 테스트 86개
 airflow/dags/    메인 파이프라인 · 웹훅 이벤트 · 로그 정리 · 알림 점검
 airflow/webhook/ Strava 웹훅 수신기 + nginx mirror 예시
 scripts/         공용 세션, 파이프라인 러너, 증분 판정, 패리티·테스트 검증, 리포트·차트 생성

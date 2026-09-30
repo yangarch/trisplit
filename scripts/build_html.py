@@ -21,14 +21,25 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date
+from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 LAKEHOUSE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(LAKEHOUSE / "scripts"))
+import status_text as stx  # noqa: E402
 import svg_charts as sc  # noqa: E402
 from spark_session import get_spark  # noqa: E402
+
+# 컨테이너는 UTC 다. date.today() 를 쓰면 KST 00~09시 실행(아침 운동 업로드 직후)의
+# 리포트 날짜가 하루 밀린다 — dbt 쪽 macros/today_kst.sql 과 같은 이유.
+TODAY = datetime.now(ZoneInfo("Asia/Seoul")).date()
+RECENT_DAYS = 21
+SPORT_ICON = {"cycling": "🚴", "swimming": "🏊", "running": "🏃"}
+# "그 외" 요약용 — Strava type 을 사람이 읽는 말로. 없는 건 원문 그대로.
+TYPE_KO = {"Walk": "걷기", "Hike": "하이킹", "Yoga": "요가", "WeightTraining": "웨이트",
+           "Workout": "운동", "Elliptical": "일립티컬", "RockClimbing": "클라이밍"}
 
 CSS = """
 :root{
@@ -89,6 +100,13 @@ tbody tr:last-child td{border-bottom:none}
   .kpi .n{font-size:1.15rem}
   th,td{padding:5px 6px;font-size:.8rem}
 }
+nav{display:flex;gap:14px;font-size:.9rem;margin:2px 0 6px}
+nav a{color:var(--muted);text-decoration:none;padding-bottom:2px}
+nav a.on{color:var(--fg);font-weight:650;border-bottom:2px solid var(--s0)}
+.status{font-size:1rem;line-height:1.75;margin:10px 0 4px}
+.feed td.nm{text-align:left;max-width:170px;overflow:hidden;text-overflow:ellipsis}
+.feed .sym{color:var(--warn)}
+.feed tr.today td{font-weight:650}
 footer{margin-top:40px;padding-top:14px;border-top:1px solid var(--line);color:var(--muted);font-size:.78rem}
 code{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:.85em}
 """
@@ -111,6 +129,23 @@ def table(headers: list[str], rows: list[list]) -> str:
     return f'<div class="card"><table><thead><tr>{h}</tr></thead><tbody>{b}</tbody></table></div>'
 
 
+def head(title: str, active: str, meta_line: str) -> list[str]:
+    """두 페이지 공통 머리말 — viewport · CSS · 제목 · 페이지 전환 링크."""
+    # viewport 메타가 없으면 모바일 브라우저가 폭 980px 을 가정하고 축소해 버린다.
+    tabs = [("index.html", "지금", "now"), ("records.html", "기록", "records")]
+    nav = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{t}</a>' for h, t, k in tabs)
+    return [
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"<title>{escape(title)} {TODAY.isoformat()}</title>",
+        f"<style>{CSS}</style>",
+        '<div class="wrap">',
+        f"<h1>{escape(title)}</h1>",
+        f"<nav>{nav}</nav>",
+        f'<div class="meta">{meta_line}</div>',
+    ]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", default=str(LAKEHOUSE.parent / "reports/index.html"))
@@ -128,26 +163,72 @@ def main() -> int:
     sports = {r["sport"]: r for r in q("SELECT * FROM tc.gold.mart_sport_totals")}
     cyc = sports.get("cycling")
 
-    # viewport 메타가 없으면 모바일 브라우저가 폭 980px 을 가정하고 축소해 버린다.
-    w('<meta charset="utf-8">')
-    w('<meta name="viewport" content="width=device-width, initial-scale=1">')
-    w(f"<title>훈련 리포트 {date.today().isoformat()}</title>")
-    w(f"<style>{CSS}</style>")
-    w('<div class="wrap">')
-    w(f"<h1>훈련 리포트</h1>")
-    w(f'<div class="meta">{meta["d0"]} ~ {meta["d1"]} · 활동 {meta["n"]:,}건 '
-      f'(중복 {meta["dups"]}건 제외) · 생성 {date.today().isoformat()}</div>')
+    meta_line = (f'{meta["d0"]} ~ {meta["d1"]} · 활동 {meta["n"]:,}건 '
+                 f'(중복 {meta["dups"]}건 제외) · 생성 {TODAY.isoformat()}')
+    P.extend(head("훈련 리포트", "now", meta_line))
 
-    # KPI
-    w('<div class="kpis">')
-    for label, val in [
-        ("사이클 누적", f'{f(cyc["distance_km"])} km' if cyc else "·"),
-        ("사이클 시간", f'{f(cyc["moving_h"])} h' if cyc else "·"),
-        ("누적 고도", f'{f(cyc["elev_m"],0)} m' if cyc else "·"),
-        ("앵커 FTP", f"{ftp} W"),
-    ]:
-        w(f'<div class="kpi"><div class="n">{escape(val)}</div><div class="l">{escape(label)}</div></div>')
-    w("</div>")
+    # ── 지금 상태 ── 누적(라이프타임)은 매번 볼 숫자가 아니라 기록 페이지로 뺐다.
+    status = [r.asDict() for r in q("SELECT * FROM tc.gold.mart_training_status")]
+    rd = q("""SELECT fitness, fatigue, form, start_date_key FROM tc.gold.mart_riduck_metrics
+              WHERE fitness IS NOT NULL ORDER BY start_date_key DESC, activity_id DESC LIMIT 1""")
+    kn = q("""SELECT ride_date, knee_medial_l, knee_medial_l_next FROM tc.gold.mart_symptom_ride
+              WHERE knee_medial_l IS NOT NULL ORDER BY ride_date DESC LIMIT 1""")
+    w("<h2>지금 상태</h2>")
+    w(f'<p class="status">{escape(stx.status_paragraph(status, rd[0].asDict() if rd else None, kn[0].asDict() if kn else None, TODAY))}</p>')
+    order = {"cycling": 0, "swimming": 1, "running": 2}
+    w(table(["종목", "최근 4주", "km", "시간", "직전 4주", "km", "마지막"],
+            [[f'{SPORT_ICON[r["sport"]]} {stx.SPORT_KO[r["sport"]]}', r["n_recent"], f(r["km_recent"]), f(r["h_recent"]),
+              r["n_prev"], f(r["km_prev"]),
+              (f'{r["days_since"]}일 전' if r["days_since"] else "오늘") if r["last_date"] else "·"]
+             for r in sorted(status, key=lambda r: order[r["sport"]])]))
+
+    # ── 최근 운동 ── 업로드 후 웹훅으로 약 10분이면 여기 뜬다 — "들어왔나" 확인용.
+    since = TODAY - timedelta(days=RECENT_DAYS - 1)
+    feed = q(f"""SELECT * FROM tc.gold.mart_activity_feed
+                 WHERE start_date_key >= DATE'{since.isoformat()}'
+                 ORDER BY start_date_key DESC, start_ts_utc DESC""")
+    main_feed = [r for r in feed if r["sport"] in SPORT_ICON]
+    others = [r for r in feed if r["sport"] not in SPORT_ICON]
+    w(f"<h2>최근 운동 <span class='meta'>{RECENT_DAYS}일</span></h2>")
+
+    def key_metric(r) -> str:
+        if r["sport"] == "cycling":
+            bits = []
+            if r["intensity_factor"] is not None:
+                bits.append(f'IF {r["intensity_factor"]:.2f}')
+            if r["tss"] is not None:
+                bits.append(f'TSS {r["tss"]:.0f}')
+            elif r["riduck_load"] is not None:
+                bits.append(f'훈련량 {r["riduck_load"]}')
+            return " · ".join(bits)
+        if r["sport"] == "swimming":
+            return stx.pace(r["pace_s_per_100m"], "100m")
+        return stx.pace(r["pace_s_per_km"], "km")
+
+    rows_html = []
+    for r in main_feed:
+        d = r["start_date_key"]
+        cls = ' class="today"' if d == TODAY else ""
+        sym = ' <span class="sym" title="증상 기록 있음">✎</span>' if r["symptom_rows"] else ""
+        cells = [f"{d.month}/{d.day}({stx.weekday(d)})", SPORT_ICON[r["sport"]],
+                 f'{escape(r["name"])}{sym}', f(r["distance_km"]),
+                 f'{int(r["moving_min"] or 0)}분', escape(key_metric(r))]
+        rows_html.append(f"<tr{cls}>" + "".join(
+            f'<td class="nm">{c}</td>' if i == 2 else f"<td>{c}</td>" for i, c in enumerate(cells)) + "</tr>")
+    if rows_html:
+        hdr = "".join(f"<th>{h}</th>" for h in ["날짜", "", "이름", "km", "시간", "지표"])
+        w(f'<div class="card feed"><table><thead><tr>{hdr}</tr></thead><tbody>{"".join(rows_html)}</tbody></table></div>')
+    else:
+        w(f'<p class="empty">최근 {RECENT_DAYS}일 사이클·수영·러닝 기록 없음</p>')
+    if others:
+        by = {}
+        for r in others:
+            k = TYPE_KO.get(r["type"], r["type"])
+            n, km = by.get(k, (0, 0.0))
+            by[k] = (n + 1, km + float(r["distance_km"] or 0))
+        w('<div class="note">그 외 ' + ", ".join(
+            f"{escape(k)} {n}회" + (f" {km:.1f}km" if km else "") for k, (n, km) in sorted(by.items(), key=lambda x: -x[1][0]))
+          + ". ✎ = 증상 로그에 기록한 운동.</div>")
 
     # ── 증상 · 피팅 ── (기록이 있을 때만)
     knee = q("""SELECT ride_date, knee_medial_l, name, setup_since
@@ -245,19 +326,86 @@ def main() -> int:
               f(r["np_q1"], 0), f(r["np_q2"], 0), f(r["np_q3"], 0), f(r["np_q4"], 0),
               f(r["durability_ratio"], 3)] for r in dur]))
 
-    # ── 연도별 ──
-    w("<h2>연도별 거리</h2>")
+    w('<footer>생성: <code>lakehouse/scripts/build_html.py</code> — '
+      'Bronze/Silver/Gold(Iceberg) + dbt 마트 기반. 인라인 SVG, 외부 의존 없음.<br>'
+      'AI 상담 입력용 마크다운: <code>reports/latest_overview.md</code></footer>')
+    w("</div>")
+
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    html = "\n".join(P)
+    out.write_text(html, encoding="utf-8")
+    print(f"[✓] HTML 리포트: {out}  ({len(html)/1024:.0f} KB)")
+
+    rec = out.parent / "records.html"
+    html = "\n".join(build_records(q, sports, meta_line))
+    rec.write_text(html, encoding="utf-8")
+    print(f"[✓] 기록 페이지: {rec}  ({len(html)/1024:.0f} KB)")
+    spark.stop()
+    return 0
+
+
+def build_records(q, sports: dict, meta_line: str) -> list[str]:
+    """기록 페이지 — 이번 달 · 올해 · 전체, 월별 · 연도별. 메인에서 뺀 라이프타임 숫자가 여기 산다."""
+    P: list[str] = head("훈련 기록", "records", meta_line)
+    w = P.append
+    ps = q("SELECT * FROM tc.gold.mart_period_summary")
+    this_m, this_y = TODAY.strftime("%Y-%m"), str(TODAY.year)
+    pick = lambda t, p, sp: next((r for r in ps if r["period_type"] == t and r["period"] == p and r["sport"] == sp), None)  # noqa: E731
+    order = ["cycling", "swimming", "running", "walking", "other"]
+    ko = {**stx.SPORT_KO, "walking": "걷기", "other": "기타"}
+
+    w("<h2>이번 달 · 올해 · 전체</h2>")
+    rows = []
+    for sp in order:
+        cells = [ko[sp]]
+        any_ = False
+        for t, p in (("month", this_m), ("year", this_y), ("all", "all")):
+            r = pick(t, p, sp)
+            any_ |= bool(r)
+            cells += [r["activities"] if r else "·", f(r["distance_km"]) if r else "·"]
+        if any_:
+            rows.append(cells)
+    w(table(["종목", f"{TODAY.month}월 회", "km", f"{TODAY.year} 회", "km", "전체 회", "km"], rows))
+    cyc_all = pick("all", "all", "cycling")
+    if cyc_all:
+        w(f'<div class="note">사이클 전체 {f(cyc_all["distance_km"])} km · {f(cyc_all["moving_h"])} h · '
+          f'누적 고도 {f(cyc_all["elev_m"], 0)} m</div>')
+
+    w("<h2>월별 <span class='meta'>최근 12개월 · km (회)</span></h2>")
+    months = sorted({r["period"] for r in ps if r["period_type"] == "month"}, reverse=True)[:12]
+    cols = [sp for sp in ("cycling", "swimming", "running") if any(r["sport"] == sp for r in ps)]
+    mrows = []
+    for m in months:
+        cells = [m]
+        for sp in cols:
+            r = pick("month", m, sp)
+            cells.append(f'{f(r["distance_km"])} ({r["activities"]})' if r else "·")
+        mrows.append(cells)
+    w(table(["월"] + [ko[c] for c in cols], mrows))
+
+    w("<h2>연도별</h2>")
     ys = q("""SELECT year,
                      max(CASE WHEN sport='cycling' THEN distance_km END) c,
                      max(CASE WHEN sport='swimming' THEN distance_km END) s
               FROM tc.gold.mart_yearly_summary GROUP BY year ORDER BY year""")
     w(f'<div class="card">{sc.year_bars([(str(r["year"]), float(r["c"] or 0), float(r["s"] or 0)) for r in ys])}</div>')
+    years = sorted({r["period"] for r in ps if r["period_type"] == "year"}, reverse=True)
+    yrows = []
+    for y in years:
+        cells = [y]
+        for sp in cols:
+            r = pick("year", y, sp)
+            cells.append(f'{f(r["distance_km"])} ({r["activities"]})' if r else "·")
+        cy = pick("year", y, "cycling")
+        cells.append(f'{f(cy["moving_h"])} h' if cy else "·")
+        yrows.append(cells)
+    w(table(["연도"] + [f"{ko[c]} km (회)" for c in cols] + ["사이클 시간"], yrows))
 
     # ── 종목별 ──
-    w("<h2>종목별 누적</h2>")
-    order = ["cycling", "swimming", "running", "walking", "other"]
+    w("<h2>종목별 누적 <span class='meta'>전체 기간</span></h2>")
     w(table(["종목", "활동", "거리 km", "시간 h", "고도 m"],
-            [[s, sports[s]["activities"], f(sports[s]["distance_km"]),
+            [[ko.get(s, s), sports[s]["activities"], f(sports[s]["distance_km"]),
               f(sports[s]["moving_h"]), f(sports[s]["elev_m"], 0)]
              for s in order if s in sports]))
 
@@ -275,18 +423,9 @@ def main() -> int:
                 [[str(r["day"]), f'{r["pdev"]} {f(r["pkm"])}km', f'{r["ddev"]} {f(r["dkm"])}km']
                  for r in dups]))
 
-    w('<footer>생성: <code>lakehouse/scripts/build_html.py</code> — '
-      'Bronze/Silver/Gold(Iceberg) + dbt 마트 기반. 인라인 SVG, 외부 의존 없음.<br>'
-      'AI 상담 입력용 마크다운: <code>reports/latest_overview.md</code></footer>')
+    w('<footer>메인(지금)에서 뺀 누적 기록. 생성: <code>scripts/build_html.py</code></footer>')
     w("</div>")
-
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    html = "\n".join(P)
-    out.write_text(html, encoding="utf-8")
-    print(f"[✓] HTML 리포트: {out}  ({len(html)/1024:.0f} KB)")
-    spark.stop()
-    return 0
+    return P
 
 
 if __name__ == "__main__":

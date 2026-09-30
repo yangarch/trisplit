@@ -21,12 +21,14 @@ from __future__ import annotations
 
 import argparse
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 LAKEHOUSE = Path(__file__).resolve().parent.parent
 ROOT = LAKEHOUSE.parent
 sys.path.insert(0, str(LAKEHOUSE / "scripts"))
+import status_text as stx  # noqa: E402
 from spark_session import get_spark  # noqa: E402
 
 SPORT_ORDER = ["cycling", "swimming", "running", "walking", "other"]
@@ -42,7 +44,9 @@ def main() -> int:
     ap.add_argument("--since-days", type=int, default=60, help="최근 윈도우 (기본 60)")
     args = ap.parse_args()
 
-    today = date.today().isoformat()
+    # 컨테이너는 UTC — KST 기준 날짜를 쓴다 (build_html.py, macros/today_kst.sql 과 같은 이유).
+    # 맥 동기화 스크립트가 이 첫 줄 날짜로 "리포트가 낡았나" 를 판단한다.
+    today = datetime.now(ZoneInfo("Asia/Seoul")).date().isoformat()
     since = (date.fromisoformat(today) - timedelta(days=args.since_days)).isoformat()
     out = Path(args.out) if args.out else ROOT / f"reports/{today}_overview.md"
 
@@ -65,6 +69,41 @@ def main() -> int:
     w(f"- 분석 컨텍스트 FTP: **{ftp} W** (출처: `activities/cycling/ftp-log.md` 현재값)")
     w(f"- 생성: `lakehouse/scripts/build_report.py` (Iceberg Gold 마트)")
     w("")
+
+    # ── 0. 지금 상태 ── 상담은 대개 "요즘 어때" 로 시작한다 — 누적보다 이게 먼저다.
+    status = [r.asDict() for r in q("SELECT * FROM tc.gold.mart_training_status")]
+    rd = q("""SELECT fitness, fatigue, form, start_date_key FROM tc.gold.mart_riduck_metrics
+              WHERE fitness IS NOT NULL ORDER BY start_date_key DESC, activity_id DESC LIMIT 1""")
+    kn = q("""SELECT ride_date, knee_medial_l, knee_medial_l_next FROM tc.gold.mart_symptom_ride
+              WHERE knee_medial_l IS NOT NULL ORDER BY ride_date DESC LIMIT 1""")
+    w("## 0. 지금 상태")
+    w("")
+    w(stx.status_paragraph(status, rd[0].asDict() if rd else None,
+                           kn[0].asDict() if kn else None, date.fromisoformat(today)))
+    w("")
+    recent_since = (date.fromisoformat(today) - timedelta(days=13)).isoformat()
+    feed = q(f"""SELECT * FROM tc.gold.mart_activity_feed
+                 WHERE start_date_key >= DATE'{recent_since}' AND sport IN ('cycling','swimming','running')
+                 ORDER BY start_date_key DESC, start_ts_utc DESC""")
+    if feed:
+        w("최근 2주 운동:")
+        w("")
+        w("| 일자 | 종목 | 이름 | km | 분 | 지표 | 증상 기록 |")
+        w("|:-:|:-:|---|---:|---:|---|:-:|")
+        for r in feed:
+            if r["sport"] == "cycling":
+                m = " · ".join(x for x in [
+                    f"IF {r['intensity_factor']:.2f}" if r["intensity_factor"] is not None else "",
+                    f"TSS {r['tss']:.0f}" if r["tss"] is not None else "",
+                    f"라이덕 훈련량 {r['riduck_load']}" if r["riduck_load"] is not None else ""] if x)
+            elif r["sport"] == "swimming":
+                m = stx.pace(r["pace_s_per_100m"], "100m")
+            else:
+                m = stx.pace(r["pace_s_per_km"], "km")
+            d = r["start_date_key"]
+            w(f"| {d}({stx.weekday(d)}) | {stx.SPORT_KO[r['sport']]} | {r['name'][:24]} | "
+              f"{fmt(r['distance_km'])} | {int(r['moving_min'] or 0)} | {m} | {'✎' if r['symptom_rows'] else ''} |")
+        w("")
 
     # ── 1. 종목별 ──
     w("## 1. 종목별 누적 (전 기간)")
