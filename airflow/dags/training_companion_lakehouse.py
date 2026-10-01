@@ -5,9 +5,8 @@ training-companion 레이크하우스 파이프라인 DAG.
 Bronze 세 개는 서로 독립이고, Silver 두 개도 activities 만 끝나면 병렬로 갈 수 있다.
 Airflow 로 옮기는 실익이 여기 있다 — 순서가 아니라 **의존 그래프**를 선언한다.
 
-                        fetch_strava  (Strava 신규 활동 → raw-gpx)
-                              │  (Bronze 세 개 모두의 상류)
-                              ├─→ fetch_streams (per-point 파워 → raw/streams) ─→ bronze_streams
+                     fetch_intervals  (Garmin → intervals.icu → 원본 계약으로 변환)
+                              │  활동 JSON + 스트림을 한 번에 만든다 (Bronze 세 개 모두의 상류)
                               ▼
     bronze_activities ──┬─→ silver_activities ─┬─→ silver_trackpoints ──┐
     bronze_trackpoints ─┤                      └─→ silver_laps_splits ──┤
@@ -19,20 +18,19 @@ Airflow 로 옮기는 실익이 여기 있다 — 순서가 아니라 **의존 �
   silver_trackpoints 는 bronze_streams + bronze_trackpoints + silver_activities 를 모두 쓴다
   (스트림 우선 통합 + start_ts_utc 로 offset 정규화).
 
-Strava 수집(fetch.py sync)은 원래 맥의 launchd 가 22:00 에 돌렸다. 홈서버로 옮기면서
-이 DAG 의 첫 태스크가 됐다 — 수집과 적재가 한 실행 안에서 의존 관계로 묶인다.
+수집 소스 — 2026-09-30 에 바뀌었다:
+  ~09-29  Strava API (ingest/strava/). Strava 가 Standard API 를 유료 구독 전용으로 바꾸며
+          앱이 Inactive 가 됐다 (HTTP 403 Application Status Inactive). 받아 둔 원본은 그대로 쓴다.
+  09-30~  intervals.icu (ingest/intervals/). Garmin 공식 연동, 개인 API 키. 원본을 기존 계약
+          (Strava activity JSON · 스트림 json.gz) 으로 변환해 이 아래는 소스를 모른다.
+  라이덕 분석(Strava description)은 이 경로에 없다 — 받아 둔 9/29 까지만 남는다.
 
-실행 경로는 둘이다:
-  22:00 예약     — 보정 실행. 최근 이틀을 다시 받아 늦게 붙은 분석·수정·놓친 이벤트를 메운다.
-  strava_event  — 업로드 웹훅이 트리거. 라이덕 분석을 기다렸다가 이 DAG 를 실행한다.
-⚠️ Strava 는 토큰 갱신 때 refresh_token 을 회전시킨다. 수집하는 곳이 둘이면 한쪽 토큰이
-   무효가 되므로 **이 DAG 만 수집한다** (맥 launchd 는 disable). max_active_runs=1 도
-   같은 이유로 필요하다 — 두 실행이 동시에 토큰을 갱신하면 안 된다.
-
-스트림 수집(fetch_streams.py)도 이 DAG 안에 있다. 처음엔 과거 392건 백필이 일일 한도에
-걸리는 작업이라 따로 뒀는데, 그 뒤로 **아무도 돌리지 않아** 새 라이딩의 파워가 조용히 빠졌다
-(9/13·9/19 6건). 백필이 끝난 지금은 신규 라이딩 몇 건이라 한도와 무관하다.
-한도에 걸려도 상태를 저장하고 0 으로 끝나며, 다음 실행이 이어 받는다.
+실행 경로:
+  22:00 예약       — 매일. 새 활동이 없어도 돌아 리포트의 "오늘" 을 갱신한다.
+  intervals_poll   — 15분마다 새 활동을 확인하고, 있을 때만 이 DAG 를 트리거한다.
+                     (intervals.icu 웹훅은 OAuth 앱 전용이라 개인 키로는 폴링한다)
+  두 경로의 수집 태스크는 pool "intervals_api"(슬롯 1)로 묶어 동시에 돌지 않게 한다 —
+  같은 state.json 을 쓴다.
 
 메모리 — 의존 그래프와 동시 실행은 별개다:
   Docker 전체 가용이 7.7GB 인데 Airflow 컴포넌트가 이미 1.5~2GB 를 쓴다.
@@ -75,8 +73,7 @@ def spark_task(dag: DAG, task_id: str, script: str, args: str = "") -> BashOpera
 
 with DAG(
     dag_id="training_companion_lakehouse",
-    description="Strava 원본 → Iceberg 메달리온 → dbt 마트 + 품질 검증",
-    # 수집이 이 DAG 안으로 들어왔으므로 launchd 가 돌던 22:00 (KST) 에 그대로 시작한다.
+    description="Garmin(intervals.icu) 원본 → Iceberg 메달리온 → dbt 마트 + 품질 검증",
     schedule="0 22 * * *",
     start_date=pendulum.datetime(2026, 9, 1, tz="Asia/Seoul"),
     catchup=False,
@@ -93,22 +90,11 @@ with DAG(
 ) as dag:
 
     # ── 수집 ── 표준 라이브러리만 쓴다 (Spark 불필요).
-    # 22:00 예약 실행은 **최근 이틀을 이미 받은 것까지 다시 받는다** (보정 실행).
-    #   웹훅(strava_event DAG)은 업로드 직후라 라이덕 분석·제목 수정이 빠질 수 있고,
-    #   서버가 꺼져 있던 동안의 이벤트는 아예 놓친다. 야간 실행이 그 빈틈을 메운다.
-    # 이벤트·수동 트리거 실행은 새 활동만 받는다 (빠르게).
-    fetch_strava = BashOperator(
-        task_id="fetch_strava",
-        bash_command=(
-            f'python "{LAKEHOUSE}/ingest/strava/fetch.py" sync'
-            '{{ " --since 2d --refresh" if dag_run.run_type == "scheduled" else "" }}'
-        ),
-    )
-
-    # fetch_strava 가 떨어뜨린 활동 JSON 을 보고 파워 있는 활동만 고른다 → 반드시 그 뒤.
-    fetch_streams = BashOperator(
-        task_id="fetch_streams",
-        bash_command=f'python "{LAKEHOUSE}/ingest/fetch_streams.py" fetch',
+    # 컷오버(2026-09-30) 이후 새로/바뀐 활동만 받는다 (내용 지문 비교 — 이름·설명 수정도 다시 받는다).
+    fetch_intervals = BashOperator(
+        task_id="fetch_intervals",
+        bash_command=f'python "{LAKEHOUSE}/ingest/intervals/fetch.py" sync',
+        pool="intervals_api",
     )
 
     # ── Bronze — 서로 독립. 소스가 다르다. ──
@@ -177,8 +163,7 @@ with DAG(
     )
 
     # ── 의존 그래프 ──
-    fetch_strava >> [bronze_activities, bronze_trackpoints]
-    fetch_strava >> fetch_streams >> bronze_streams
+    fetch_intervals >> [bronze_activities, bronze_trackpoints, bronze_streams]
     bronze_activities >> silver_activities
 
     # 시계열 통합은 두 Bronze 소스와 silver_activities(start_ts_utc) 를 모두 쓴다

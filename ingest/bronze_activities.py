@@ -2,7 +2,10 @@
 """
 Bronze 적재 — 활동 요약 / 랩 / 스플릿.
 
-소스: activities/strava/raw-gpx/*.json  (기존 fetch.py 가 떨어뜨리는 원본, 읽기만 한다)
+소스: activities/strava/raw-gpx/*.json        Strava 수집기 원본 (~2026-09-29)
+      activities/intervals/normalized/*.json    intervals.icu 수집기가 같은 계약으로 변환한 것 (2026-09-30~)
+      Strava 앱이 유료화로 비활성된 뒤 Garmin → intervals.icu 로 소스를 바꿨다.
+      두 소스를 **같은 JSON 계약**(Strava activity detail 형식)으로 맞춰서 이 아래는 소스를 모른다.
 대상: tc.bronze.activities / tc.bronze.laps / tc.bronze.splits
 
 설계 판단:
@@ -38,7 +41,15 @@ sys.path.insert(0, str(LAKEHOUSE_DIR / "scripts"))
 from ingest_audit import record as audit_record  # noqa: E402
 from spark_session import CATALOG, get_spark  # noqa: E402
 
-RAW_JSON_GLOB = str(LAKEHOUSE_DIR.parent / "activities/strava/raw-gpx/*.json")
+SOURCE_DIRS = [
+    LAKEHOUSE_DIR.parent / "activities/strava/raw-gpx",
+    LAKEHOUSE_DIR.parent / "activities/intervals/normalized",
+]
+
+
+def source_paths() -> list[str]:
+    """파일이 있는 소스 디렉토리의 글롭만. 매칭이 없는 글롭을 넘기면 Spark 가 Path does not exist 로 죽는다."""
+    return [str(d / "*.json") for d in SOURCE_DIRS if any(d.glob("*.json"))]
 NS = f"{CATALOG}.bronze"
 
 # 적재 1회 = 1 배치. 배치 전체가 같은 값을 갖는 게 의미상으로도 맞고,
@@ -145,7 +156,7 @@ def read_source(spark: SparkSession) -> DataFrame:
     # .option("wholetext", ...).text(...) 형태는 text() 의 기본 인자(None)가
     # 앞서 설정한 옵션을 덮어써서 조용히 줄 단위로 읽힌다 (838 파일 → 171만 행).
     raw = (
-        spark.read.text(RAW_JSON_GLOB, wholetext=True)
+        spark.read.text(source_paths(), wholetext=True)
         .withColumn("_source_file", F.input_file_name())
         .withColumnRenamed("value", "_raw")
     )
@@ -280,10 +291,10 @@ def main() -> int:
     ):
         audit_record(
             spark, layer="bronze", table_name=f"{NS}.{tbl}",
-            source_kind="strava_json", source_count=expected,
+            source_kind="activity_json", source_count=expected,
             loaded_count=spark.table(f"{NS}.{tbl}").count(),
             run_ts=RUN_TS,
-            note="raw-gpx/*.json",
+            note="strava raw-gpx + intervals normalized",
         )
 
     spark.stop()

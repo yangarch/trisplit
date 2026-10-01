@@ -19,7 +19,7 @@ Gold 마트가 94 개 지표에서 같은 숫자를 낸다는 것을 셀 단위�
 
 | 계층 | 내용 | 도구 |
 |---|---|---|
-| 수집 | 활동 · per-point 스트림, 업로드 웹훅 | Strava API (표준 라이브러리) |
+| 수집 | 활동 · per-point 스트림 (Garmin 기록) | intervals.icu API — 2026-09-29 까지는 Strava API |
 | Bronze | 원본 활동·랩·스플릿·트랙포인트·스트림 적재 (증분) | PySpark → Iceberg |
 | Silver | 정규화, 중복 판정, 두 시계열 소스 통합 | PySpark |
 | Gold | 종목별 지표 · 파워 분석 · 증상×부하 · 현황 모델 17 개 | dbt (`method: session`) |
@@ -178,37 +178,38 @@ dbt 증분 모델(`int_power_curve_ride`)로 새 라이딩만 계산해 **3.4초
 Spark 는 태스크 안에서 local 모드로 뜨고 내려간다 — 상주 클러스터를 둘 규모가 아니다.
 
 ```
-운동 업로드
-  └─ Strava 웹훅 ─▶ 수신기(90초 묶기) ─▶ strava_event DAG
-                                           wait_for_riduck ─▶ fetch_events ─▶ 메인 DAG 트리거
-22:00 예약 ─▶ 메인 DAG (보정 실행: 최근 2일 재수집)
+운동 업로드 (Garmin → intervals.icu 자동 동기화)
+  └─ intervals_poll (15분) ─▶ 새 활동 있으면 ─▶ 메인 DAG 트리거
+22:00 예약 ─▶ 메인 DAG (새 활동이 없어도 리포트의 "오늘" 갱신)
 
 메인 DAG
-  fetch_strava ─┬─▶ bronze_activities ──▶ silver_activities ─┬─▶ silver_laps_splits ──┐
-                ├─▶ bronze_trackpoints ────────────────────┐ │                        │
-                └─▶ fetch_streams ─▶ bronze_streams ───────┴─┴─▶ silver_trackpoints ─┤
-                                                                                     ▼
-                       export_ftp_seed ─▶ dbt seed ─▶ dbt run ─▶ dbt test ─┬─▶ build_report
-                                                                           └─▶ build_html
+  fetch_intervals ─┬─▶ bronze_activities ──▶ silver_activities ─┬─▶ silver_laps_splits ──┐
+                   ├─▶ bronze_trackpoints ────────────────────┐ │                        │
+                   └─▶ bronze_streams ────────────────────────┴─┴─▶ silver_trackpoints ─┤
+                                                                                        ▼
+            export_ftp_seed ─▶ export_body_seeds ─▶ dbt seed ─▶ dbt run ─▶ dbt test ─┬─▶ build_report
+                                                                                     └─▶ build_html
 ```
 
-### 이벤트 트리거 + 야간 보정
+### 수집 소스가 바뀌었다 — Strava 에서 intervals.icu 로
 
-운동 직후 결과를 보려면 22:00 까지 기다려야 했다. Strava 업로드 웹훅으로 트리거한다.
+2026-09-30, Strava 가 Standard 등급 API 를 **유료 구독 전용**으로 바꾸면서(기존 개발자 무료 3개월 종료)
+API 앱이 비활성이 됐다 — 모든 호출이 `403 Application Status Inactive`. 실패 알림으로 그날 바로 알았다.
 
-- **조건 대기, 고정 지연이 아니다.** 분석 서비스(라이덕)는 업로드 **뒤에** description 에 훈련부하·
-  파워 분석을 써 넣는다. 즉시 받으면 분석 없는 JSON 이 남고, 수집기는 받은 활동을 다시 받지 않는다.
-  `wait_for_riduck` 센서가 2분마다 분석이 붙었는지 보고(판정 규칙은 파서 `stg_riduck.sql` 과 동일),
-  라이딩이 아니면 바로 통과한다. `reschedule` 모드라 기다리는 동안 작업 슬롯을 쓰지 않는다.
-  20분이 지나면 기다림을 포기하고 먼저 반영한다.
-- **야간 보정이 빈틈을 메운다.** 웹훅은 서버가 꺼져 있으면 놓치고, 분석이 늦게 붙거나 제목이
-  나중에 바뀔 수 있다. 22:00 예약 실행만 최근 2일을 **이미 받은 것까지 다시 받는다.**
-- **구독은 앱당 하나다.** 쓰던 Strava 앱의 웹훅 구독은 이미 다른 개인 서비스가 가지고 있었다.
-  구독을 빼앗는 대신 그 서비스 앞단 nginx 에 `mirror` 를 걸어 이벤트를 **복제** 받는다 —
-  복제 응답은 버려지므로 원래 서비스의 동작은 바뀌지 않는다 (`airflow/webhook/nginx-mirror.conf.example`).
-  공유 앱이라 수신기가 `owner_id` · `subscription_id` 로 거른다. Strava 이벤트에는 서명이 없지만
-  "확인해 보라" 는 신호로만 쓰고 데이터는 본인 토큰으로 API 에서 다시 받으므로, 가짜 이벤트가
-  할 수 있는 최악은 파이프라인을 한 번 더 돌리는 것이다.
+기록의 원천은 Garmin 이고 Strava 는 중간 경유지였다. **Garmin → intervals.icu(공식 연동, 개인 API 키) → 여기**
+로 경로를 바꿨다. 수집기(`ingest/intervals/`)가 응답을 **기존 원본 계약**(Strava 활동 JSON · 스트림 json.gz)
+으로 변환해 저장하므로 Bronze 이후는 한 줄도 바꾸지 않았다 — 활동 JSON 을 읽는 경로 하나만 늘렸다.
+
+- **컷오버는 날짜로.** Strava 쪽 외부 id(`garmin_ping_…`)와 Garmin 활동 id 가 다른 체계라 같은 활동을 id 로
+  짝지을 수 없다. Strava 로 받은 마지막 날(9/29) 다음 날부터 받는다.
+- **id 충돌 회피.** `10¹² + intervals 번호` — Strava id 대역과 겹치지 않게 자리를 띄웠다.
+- **없는 스트림은 만든다.** 경사(고도/거리 차분, 약 30m 구간)와 정지 판정(속도 > 0.5 m/s).
+  대신 **토크 · 좌우 밸런스**가 초 단위로 새로 생겼다 (양발 파워미터).
+- **웹훅 → 폴링.** intervals.icu 웹훅은 OAuth 앱 전용이라 개인 키로는 15분 폴링이다. 새 활동이 없으면
+  뒤를 건너뛴다(skipped — 실패가 아니다). 하루 ~100회로 한도의 2%.
+- **잃은 것:** 라이덕 분석(Strava description 에 쓰이던 훈련부하) — 9/29 까지만 남는다.
+- 이전 Strava 경로(업로드 웹훅 + 라이덕 분석 조건 대기 + 공유 앱 구독을 nginx `mirror` 로 복제)의
+  코드는 `ingest/strava/` · `airflow/webhook/` 에 남겨 두었다.
 
 ### 실패하면 알린다
 
@@ -241,6 +242,7 @@ Spark 는 태스크 안에서 local 모드로 뜨고 내려간다 — 상주 클
 | `ModuleNotFoundError: airflow` | 이미지에 없는 uid 로 돌면 `HOME=/` 가 되어 `~/.local` 의 패키지를 못 찾는다. 공식 entrypoint 가 보정해 주는데 init 이 `entrypoint: bash` 로 그걸 건너뛰고 있었다 |
 | 새 라이딩의 파워가 조용히 빠짐 | 스트림 수집기를 백필용으로 한 번 돌리고 **스케줄에 넣지 않았다.** 활동은 매일 들어오니 멀쩡해 보였고, 파워 분석만 2주 가까이 멈춰 있었다 |
 | 시드 빈 칸이 문자열 `'None'` 으로 | dbt-spark(session) seed 는 빈 문자열 칸을 NULL 이 아니라 `'None'` 으로 싣는다. 테스트가 전부 통과한 채 이름표에 "(None)" 이 찍혔다 → staging 에서 정규화 + **값을 직접 보는** 회귀 테스트 |
+| intervals.icu 만 403 (Cloudflare 1010) | 키는 맞았다. Python 기본 User-Agent(`Python-urllib`)를 Cloudflare 가 막고 있었다 — UA 를 명시하니 200 |
 | rsync 제외 패턴이 새어 `.env` 가 복사됨 | `/`로 시작하는 제외 패턴은 **소스 루트 기준**이다. 하위 폴더만 보내는 순간 매칭이 안 된다. git 배포로 바꿔 경로 자체를 없앴다 |
 
 이 목록에서 반복되는 모양이 하나 있다 — **실패했는데 성공처럼 보이는 것**.
@@ -310,11 +312,12 @@ Airflow 3 의 기본 인증은 `SimpleAuthManager` 라 `airflow users create`(FA
 ## 구조
 
 ```
-ingest/strava/   수집 — Strava 활동 수집기 · 클라이언트 · OAuth
+ingest/intervals/ 수집 — intervals.icu → 기존 원본 계약 변환 (2026-09-30~)
+ingest/strava/   수집 — Strava 수집기 · OAuth (~2026-09-29, 보존)
 ingest/          Bronze — 원본 → Iceberg (증분), 스트림 수집, 적재 감사 기록
 transform/       Silver — 정규화·중복 판정·시계열 통합
 dbt/             Gold   — 모델 17개 + 테스트 86개
-airflow/dags/    메인 파이프라인 · 웹훅 이벤트 · 로그 정리 · 알림 점검
+airflow/dags/    메인 파이프라인 · intervals 폴링 · 로그 정리 · 알림 점검
 airflow/webhook/ Strava 웹훅 수신기 + nginx mirror 예시
 scripts/         공용 세션, 파이프라인 러너, 증분 판정, 패리티·테스트 검증, 리포트·차트 생성
 config/          참조 데이터 (장비 매핑)

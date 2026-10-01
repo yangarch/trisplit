@@ -54,6 +54,8 @@ x-airflow-common: &airflow-common
     PYTHONPATH: ${TC_PROJECT_PATH}/lakehouse/scripts
     # 실패 알림 토픽 (dags/tc_alerts.py). 비어 있으면 알림만 건너뛴다.
     NTFY_TOPIC: ${NTFY_TOPIC:-}
+    # intervals.icu 개인 API 키 (ingest/intervals/fetch.py). Garmin → intervals.icu → 여기.
+    INTERVALS_API_KEY: ${INTERVALS_API_KEY:-}
   volumes:
     # 호스트와 동일한 절대경로로 마운트 (위 주석 참조).
     # 스크립트가 __file__ 기준 상대경로로 원본 데이터와 웨어하우스를 찾으므로 구조도 유지된다.
@@ -153,33 +155,6 @@ services:
     ports:
       - "8090:80"
     restart: unless-stopped
-
-  # Strava 업로드 웹훅 수신기 (webhook/receiver.py) — 이벤트를 모아 strava_event DAG 를 트리거.
-  # 외부 경로는 메인 서버 nginx 의 mirror 가 LAN 으로 복제해 주는 것뿐이다.
-  # 이미지 빌드 없이 표준 라이브러리 스크립트를 읽기 전용으로 마운트해 돌린다.
-  webhook:
-    image: python:3.13-alpine
-    command: ["python", "-u", "/app/receiver.py"]
-    volumes:
-      - ./webhook:/app:ro
-    environment:
-      STRAVA_ATHLETE_ID: ${STRAVA_ATHLETE_ID:?.env 에 설정하세요}
-      STRAVA_SUBSCRIPTION_ID: ${STRAVA_SUBSCRIPTION_ID:-}
-      STRAVA_VERIFY_TOKEN: ${STRAVA_VERIFY_TOKEN:-}
-      AIRFLOW_URL: http://apiserver:8080
-      # Airflow API 로 DAG 를 트리거하려면 인증이 필요하다. SimpleAuthManager 는 사용자가
-      # admin 하나라 그 자격증명을 쓴다 — 수신기는 LAN 에만 열려 있고 코드가 트리거만 한다.
-      AIRFLOW_USER: ${AIRFLOW_ADMIN_USER}
-      AIRFLOW_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
-    ports:
-      - "8091:8091"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8091/healthz"]
-      interval: 30s
-      retries: 3
-    restart: unless-stopped
-    depends_on:
-      - apiserver
 
 volumes:
   postgres-db:

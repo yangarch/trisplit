@@ -82,7 +82,7 @@ def main() -> int:
     spark.sql(f"""
         INSERT INTO {AUDIT}
         SELECT current_timestamp(), 'bronze', 'tc.bronze.activities',
-               'strava_json', 838L, 830L, 'FAULT INJECTION'
+               'activity_json', 838L, 830L, 'FAULT INJECTION'
     """)
     check("수집 838 / 적재 830", "assert_ingest_reconciled")
     rollback(spark, AUDIT, snap_a)
