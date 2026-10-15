@@ -169,12 +169,12 @@ def main() -> int:
 
     # ── 지금 상태 ── 누적(라이프타임)은 매번 볼 숫자가 아니라 기록 페이지로 뺐다.
     status = [r.asDict() for r in q("SELECT * FROM tc.gold.mart_training_status")]
-    rd = q("""SELECT fitness, fatigue, form, start_date_key FROM tc.gold.mart_riduck_metrics
-              WHERE fitness IS NOT NULL ORDER BY start_date_key DESC, activity_id DESC LIMIT 1""")
+    fit = q("""SELECT fitness_date, ctl, atl FROM tc.gold.mart_fitness_daily
+               ORDER BY fitness_date DESC LIMIT 1""")
     kn = q("""SELECT ride_date, knee_medial_l, knee_medial_l_next FROM tc.gold.mart_symptom_ride
               WHERE knee_medial_l IS NOT NULL ORDER BY ride_date DESC LIMIT 1""")
     w("<h2>지금 상태</h2>")
-    w(f'<p class="status">{escape(stx.status_paragraph(status, rd[0].asDict() if rd else None, kn[0].asDict() if kn else None, TODAY))}</p>')
+    w(f'<p class="status">{escape(stx.status_paragraph(status, fit[0].asDict() if fit else None, kn[0].asDict() if kn else None, TODAY))}</p>')
     order = {"cycling": 0, "swimming": 1, "running": 2}
     w(table(["종목", "최근 4주", "km", "시간", "직전 4주", "km", "마지막"],
             [[f'{SPORT_ICON[r["sport"]]} {stx.SPORT_KO[r["sport"]]}', r["n_recent"], f(r["km_recent"]), f(r["h_recent"]),

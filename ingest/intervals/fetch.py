@@ -53,12 +53,15 @@ BASE = TC_ROOT / "activities/intervals"
 RAW_DIR = BASE / "raw"
 NORM_DIR = BASE / "normalized"
 STATE_PATH = BASE / "state.json"
+WELLNESS_PATH = BASE / "wellness.json"
 STREAMS_DIR = LAKEHOUSE_DIR / "raw/streams"
 
 API = "https://intervals.icu/api/v1"
 UA = "trisplit-lakehouse/1.0 (personal; +https://github.com/yangarch/trisplit)"
 CUTOVER = os.environ.get("INTERVALS_SINCE", "2026-09-30")
 ID_OFFSET = 10**12
+# 훈련부하(CTL/ATL)는 지난 값도 활동이 바뀌면 다시 계산된다 — 매번 이 기간 전체를 덮어쓴다
+WELLNESS_DAYS = 400
 
 # 변경 판정에 쓰는 필드 — icu_ctl/atl 처럼 매일 바뀌는 파생값은 넣지 않는다 (매번 재수집하게 된다)
 FINGERPRINT_KEYS = ("name", "description", "type", "distance", "moving_time", "elapsed_time",
@@ -293,6 +296,29 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_wellness(_args: argparse.Namespace) -> int:
+    """일별 훈련부하(CTL·ATL·eFTP) — 라이덕 체력/피로를 대신한다.
+
+    활동마다 붙는 icu_ctl/atl 과 달리 쉬는 날에도 값이 있다 (그날까지의 감쇠가 반영된 값).
+    intervals.icu 는 Garmin 연동 시점부터 약 1년을 백필해 2025-10 부터 값이 있다 —
+    시작점은 0 에서 쌓이므로 첫 6주 남짓은 과소평가다. "지금" 에만 쓰면 문제없다.
+    newest 는 하루 넉넉히 (컨테이너는 UTC) — 미래 날짜의 예측값은 staging 에서 오늘(KST)까지로 자른다.
+    """
+    oldest = (date.today() - timedelta(days=WELLNESS_DAYS)).isoformat()
+    newest = (date.today() + timedelta(days=1)).isoformat()
+    rows = get(f"/athlete/0/wellness?oldest={oldest}&newest={newest}")
+    if not isinstance(rows, list) or not rows:
+        raise IntervalsError(f"wellness 응답이 비었다 ({oldest}~{newest})")
+    WELLNESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = WELLNESS_PATH.with_suffix(".tmp")
+    tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=1) + "\n")
+    tmp.replace(WELLNESS_PATH)
+    last = max((r for r in rows if r["id"] <= date.today().isoformat()), key=lambda r: r["id"])
+    print(f"[✓] wellness {rows[0]['id']}~{rows[-1]['id']} {len(rows)}일 · "
+          f"{last['id']} CTL {last.get('ctl') or 0:.1f} ATL {last.get('atl') or 0:.1f}")
+    return 0
+
+
 def cmd_status(_args: argparse.Namespace) -> int:
     st = load_state()
     print(f"컷오버: {CUTOVER} · 받은 활동 {len(st['seen'])}건 · 마지막 실행 {st.get('last_run_at')}")
@@ -306,6 +332,7 @@ def main() -> int:
     s.add_argument("--refresh", action="store_true", help="전부 다시 받기")
     s.add_argument("--dry", action="store_true", help="대상만 출력")
     s.set_defaults(func=cmd_sync)
+    sub.add_parser("wellness", help="일별 훈련부하(CTL·ATL·eFTP) 받기").set_defaults(func=cmd_wellness)
     sub.add_parser("status").set_defaults(func=cmd_status)
     args = p.parse_args()
     try:

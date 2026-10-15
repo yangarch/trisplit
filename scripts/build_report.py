@@ -72,13 +72,13 @@ def main() -> int:
 
     # ── 0. 지금 상태 ── 상담은 대개 "요즘 어때" 로 시작한다 — 누적보다 이게 먼저다.
     status = [r.asDict() for r in q("SELECT * FROM tc.gold.mart_training_status")]
-    rd = q("""SELECT fitness, fatigue, form, start_date_key FROM tc.gold.mart_riduck_metrics
-              WHERE fitness IS NOT NULL ORDER BY start_date_key DESC, activity_id DESC LIMIT 1""")
+    fit = q("""SELECT fitness_date, ctl, atl FROM tc.gold.mart_fitness_daily
+               ORDER BY fitness_date DESC LIMIT 1""")
     kn = q("""SELECT ride_date, knee_medial_l, knee_medial_l_next FROM tc.gold.mart_symptom_ride
               WHERE knee_medial_l IS NOT NULL ORDER BY ride_date DESC LIMIT 1""")
     w("## 0. 지금 상태")
     w("")
-    w(stx.status_paragraph(status, rd[0].asDict() if rd else None,
+    w(stx.status_paragraph(status, fit[0].asDict() if fit else None,
                            kn[0].asDict() if kn else None, date.fromisoformat(today)))
     w("")
     recent_since = (date.fromisoformat(today) - timedelta(days=13)).isoformat()
@@ -198,11 +198,40 @@ def main() -> int:
           f"{fmt(r['intensity_factor'], 2)} | {fmt(r['tss'], 0)} | {r['name'][:28]} |")
     w("")
 
-    # ── 라이덕 ──
+    # ── 훈련부하 (intervals.icu) ── 2026-09-30 부터 라이덕 체력/피로를 대신한다. 척도가 달라 이어 읽지 않는다.
+    #    주 단위로 끊어 8주 — 오늘과 같은 요일의 값만 고른다 (일별 41행은 상담 입력으로 너무 길다).
+    tl = q("""SELECT * FROM tc.gold.mart_fitness_daily
+              WHERE fitness_date >= date_sub((SELECT max(fitness_date) FROM tc.gold.mart_fitness_daily), 49)
+                AND pmod(datediff((SELECT max(fitness_date) FROM tc.gold.mart_fitness_daily), fitness_date), 7) = 0
+              ORDER BY fitness_date""")
+    if tl:
+        last = tl[-1]
+        w("### 훈련부하 (intervals.icu)")
+        w("")
+        w(f"- **{last['fitness_date']}**: 체력(CTL) **{last['ctl']:.0f}** / 피로(ATL) **{last['atl']:.0f}** "
+          f"/ 균형 **{last['form']:+.0f}** · 램프 {fmt(last['ramp_rate'], 1)}/주")
+        if last["ride_eftp"]:
+            w(f"- intervals.icu eFTP: **{last['ride_eftp']:.0f} W** — ftp-log 현재값 {ftp}W 대비 "
+              f"{int(last['ride_eftp']) - ftp:+d}W (대조용, 앵커는 ftp-log)")
+        w("- 라이덕(9/29 까지)과 부하 계산이 달라 숫자를 이어 읽지 않는다.")
+        w("")
+        w("| 일자 | 체력 | 피로 | 균형 | 주간 부하 |")
+        w("|:-:|--:|--:|--:|--:|")
+        wk = {r["fitness_date"]: r["wk_load"] for r in q("""
+              SELECT f.fitness_date, sum(g.load) wk_load
+              FROM tc.gold.mart_fitness_daily f JOIN tc.gold.mart_fitness_daily g
+                ON g.fitness_date BETWEEN date_sub(f.fitness_date, 6) AND f.fitness_date
+              GROUP BY f.fitness_date""")}
+        for r in tl:
+            w(f"| {r['fitness_date']} | {r['ctl']:.0f} | {r['atl']:.0f} | {r['form']:+.0f} | "
+              f"{fmt(wk.get(r['fitness_date']), 0)} |")
+        w("")
+
+    # ── 라이덕 ── Strava description 에서만 실려 왔다 — 2026-09-29 이 마지막.
     rd = q(f"""SELECT count(*) n FROM tc.gold.mart_riduck_metrics
                WHERE sport='cycling' AND start_date_key >= date'{since}'""")[0]
     if rd["n"]:
-        w("### 라이덕 지표")
+        w("### 라이덕 지표 (2026-09-29 까지)")
         w("")
         last = q("""SELECT * FROM tc.gold.mart_riduck_metrics WHERE sport='cycling'
                     ORDER BY start_date_key DESC LIMIT 1""")[0]

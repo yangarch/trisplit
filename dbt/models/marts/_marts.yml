@@ -72,8 +72,26 @@ models:
         tests:
           - between: {min_value: 0, max_value: 1500}
 
+  - name: mart_fitness_daily
+    description: >
+      intervals.icu 일별 훈련부하 (CTL·ATL·균형). 2026-09-30 부터 라이덕 체력/피로를 대신한다.
+      척도가 라이덕과 달라 9/29 이전 라이덕 값과 이어 읽지 않는다.
+    columns:
+      - name: fitness_date
+        tests: [unique, not_null]
+      - name: ctl
+        tests:
+          - not_null
+          - between: {min_value: 0, max_value: 250}
+      - name: atl
+        tests:
+          - not_null
+          - between: {min_value: 0, max_value: 400}
+
   - name: mart_riduck_metrics
-    description: 라이덕이 활동 description 에 남긴 훈련부하 지표 (overview.py 3절 이식).
+    description: >
+      라이덕이 활동 description 에 남긴 훈련부하 지표 (overview.py 3절 이식).
+      Strava 경로에서만 실려 와 2026-09-29 이 마지막이다 — 이후 체력/피로는 mart_fitness_daily.
     columns:
       - name: activity_id
         tests: [unique, not_null]

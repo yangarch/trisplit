@@ -4,7 +4,7 @@
 LLM 이 아니라 **규칙으로** 쓴다. 매일 밤·업로드마다 도는 파이프라인에 외부 API 호출을 넣지 않고,
 같은 숫자면 항상 같은 문장이 나오게 한다 (숫자와 문장이 어긋나는 종류의 버그가 없다).
 
-판정 기준을 지어내지 않는다 — 라이덕 균형을 "과훈련" 같은 말로 바꾸지 않고 숫자와
+판정 기준을 지어내지 않는다 — 균형(CTL−ATL)을 "과훈련" 같은 말로 바꾸지 않고 숫자와
 "피로가 체력보다 높다/낮다" 라는 사실만 쓴다. 해석은 대화에서.
 """
 from __future__ import annotations
@@ -41,16 +41,20 @@ def sport_sentence(r: dict) -> str | None:
     return f"{ko}은 {r['days_since']}일째 없음 (마지막 {r['last_date']})"
 
 
-def riduck_sentence(rd: dict | None, today: date) -> str | None:
-    """라이덕 체력/피로/균형 — 가장 최근 값."""
-    if not rd or rd.get("fitness") is None:
+def load_sentence(fit: dict | None, today: date) -> str | None:
+    """훈련부하 체력(CTL)/피로(ATL)/균형 — intervals.icu 일별 값 중 오늘(없으면 가장 최근).
+
+    2026-09-29 까지는 라이덕 값(Strava description)을 썼다. 수집 경로가 바뀌며 멈춰 교체했다.
+    """
+    if not fit or fit.get("ctl") is None:
         return None
-    form = rd["form"]
+    ctl, atl = round(fit["ctl"]), round(fit["atl"])
+    form = ctl - atl
     rel = "피로가 체력보다 높다" if form < 0 else ("체력이 피로보다 높다" if form > 0 else "체력과 피로가 같다")
-    s = f"라이덕 훈련부하는 체력 {rd['fitness']} · 피로 {rd['fatigue']} · 균형 {form:+d} — {rel}"
-    age = (today - rd["start_date_key"]).days
-    if age > 7:
-        s += f" (마지막 라이딩 {rd['start_date_key']} 기준, {age}일 전)"
+    s = f"훈련부하는 체력 {ctl} · 피로 {atl} · 균형 {form:+d} — {rel}"
+    age = (today - fit["fitness_date"]).days
+    if age > 1:
+        s += f" ({fit['fitness_date']} 기준, {age}일 전 값)"
     return s
 
 
@@ -61,11 +65,11 @@ def knee_sentence(k: dict | None) -> str | None:
             + (f", 다음날 {k['knee_medial_l_next']}" if k.get("knee_medial_l_next") is not None else ""))
 
 
-def status_paragraph(status: list[dict], riduck: dict | None, knee: dict | None, today: date) -> str:
+def status_paragraph(status: list[dict], fit: dict | None, knee: dict | None, today: date) -> str:
     order = {"cycling": 0, "swimming": 1, "running": 2}
     parts = [s for s in (sport_sentence(r) for r in sorted(status, key=lambda r: order[r["sport"]])) if s]
     out = "최근 4주 " + ", ".join(parts) + "." if parts else "최근 4주 기록이 없다."
-    for extra in (riduck_sentence(riduck, today), knee_sentence(knee)):
+    for extra in (load_sentence(fit, today), knee_sentence(knee)):
         if extra:
             out += " " + extra + "."
     return out

@@ -40,6 +40,14 @@ seeds:
     fitting_changes:
       +column_types:
         effective_date: date
+    intervals_fitness:
+      +column_types:
+        fitness_date: date
+        ctl: double
+        atl: double
+        ramp_rate: double
+        load: double
+        ride_eftp: double
 
 models:
   training_companion:

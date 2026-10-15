@@ -12,8 +12,9 @@ Airflow 로 옮기는 실익이 여기 있다 — 순서가 아니라 **의존 �
     bronze_trackpoints ─┤                      └─→ silver_laps_splits ──┤
     bronze_streams ─────┘                                               │
                                                                         ▼
-                  export_ftp_seed → export_body_seeds → dbt_seed → dbt_run → dbt_test ─┬─→ build_report
-                                                                                       └─→ build_html
+      export_ftp_seed → export_body_seeds → export_fitness_seed → dbt_seed → dbt_run → dbt_test ─┬─→ build_report
+                                                     ▲                                                └─→ build_html
+                         fetch_intervals → fetch_wellness  (일별 CTL·ATL — 라이덕 체력/피로 대신)
 
   silver_trackpoints 는 bronze_streams + bronze_trackpoints + silver_activities 를 모두 쓴다
   (스트림 우선 통합 + start_ts_utc 로 offset 정규화).
@@ -96,6 +97,13 @@ with DAG(
         bash_command=f'python "{LAKEHOUSE}/ingest/intervals/fetch.py" sync',
         pool="intervals_api",
     )
+    # 일별 훈련부하(CTL·ATL) — 라이덕 체력/피로 대신. 새 활동이 반영된 값을 받게 수집 뒤에 돈다.
+    # 수집이 점검으로 건너뛰어지면 이것도 같은 점검에 걸리니 같이 건너뛴다 (기본 trigger rule).
+    fetch_wellness = BashOperator(
+        task_id="fetch_wellness",
+        bash_command=f'python "{LAKEHOUSE}/ingest/intervals/fetch.py" wellness',
+        pool="intervals_api",
+    )
 
     # ── Bronze — 서로 독립. 소스가 다르다. ──
     # 수집이 intervals.icu 점검으로 건너뛰어져도(exit 99 → skipped) 받아 둔 원본으로 계속 간다 —
@@ -126,6 +134,12 @@ with DAG(
         bash_command=f'python "{LAKEHOUSE}/scripts/export_body_seeds.py"',
         env=TASK_ENV,
         append_env=True,
+    )
+    # wellness.json → 시드. 오늘 wellness 를 못 받았으면(점검) 어제까지 받은 파일로 만든다.
+    export_fitness = BashOperator(
+        task_id="export_fitness_seed",
+        bash_command=f'python "{LAKEHOUSE}/scripts/export_fitness_seed.py"',
+        trigger_rule="none_failed",
     )
     dbt_seed = BashOperator(
         task_id="dbt_seed",
@@ -168,6 +182,7 @@ with DAG(
 
     # ── 의존 그래프 ──
     fetch_intervals >> [bronze_activities, bronze_trackpoints, bronze_streams]
+    fetch_intervals >> fetch_wellness >> export_fitness
     bronze_activities >> silver_activities
 
     # 시계열 통합은 두 Bronze 소스와 silver_activities(start_ts_utc) 를 모두 쓴다
@@ -175,5 +190,5 @@ with DAG(
 
     silver_activities >> silver_laps_splits
 
-    [silver_trackpoints, silver_laps_splits] >> export_ftp >> export_body >> dbt_seed >> dbt_run >> dbt_test
+    [silver_trackpoints, silver_laps_splits] >> export_ftp >> export_body >> export_fitness >> dbt_seed >> dbt_run >> dbt_test
     dbt_test >> [build_report, build_html]
