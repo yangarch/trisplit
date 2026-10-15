@@ -22,7 +22,7 @@ Gold 마트가 94 개 지표에서 같은 숫자를 낸다는 것을 셀 단위�
 | 수집 | 활동 · per-point 스트림 (Garmin 기록) | intervals.icu API — 2026-09-29 까지는 Strava API |
 | Bronze | 원본 활동·랩·스플릿·트랙포인트·스트림 적재 (증분) | PySpark → Iceberg |
 | Silver | 정규화, 중복 판정, 두 시계열 소스 통합 | PySpark |
-| Gold | 종목별 지표 · 파워 분석 · 증상×부하 · 현황 모델 17 개 | dbt (`method: session`) |
+| Gold | 종목별 지표 · 파워 분석 · 증상×부하 · 현황 모델 18 개 | dbt (`method: session`) |
 | 품질 | 수집량 대비 적재량, 임계값, 스키마, 값 회귀 | dbt test 86 개 |
 | 리포트 | 마크다운(상담 입력) + HTML 두 페이지 — 「지금」(전 종목 현황·최근 운동) · 「기록」(월·연·전체) | Python, 인라인 SVG, nginx |
 | 운영 | 의존 그래프 · 스케줄 · 이벤트 트리거 · 실패 알림 | Airflow 3 (Docker Compose, 홈서버) |
@@ -187,8 +187,9 @@ Spark 는 태스크 안에서 local 모드로 뜨고 내려간다 — 상주 클
                    ├─▶ bronze_trackpoints ────────────────────┐ │                        │
                    └─▶ bronze_streams ────────────────────────┴─┴─▶ silver_trackpoints ─┤
                                                                                         ▼
-            export_ftp_seed ─▶ export_body_seeds ─▶ dbt seed ─▶ dbt run ─▶ dbt test ─┬─▶ build_report
-                                                                                     └─▶ build_html
+  export_ftp_seed ─▶ export_body_seeds ─▶ export_fitness_seed ─▶ dbt seed ─▶ dbt run ─▶ dbt test ─┬─▶ build_report
+                                                  ▲                                                └─▶ build_html
+             fetch_intervals ─▶ fetch_wellness ───┘  (일별 CTL·ATL)
 ```
 
 ### 수집 소스가 바뀌었다 — Strava 에서 intervals.icu 로
@@ -207,7 +208,10 @@ API 앱이 비활성이 됐다 — 모든 호출이 `403 Application Status Inac
   대신 **토크 · 좌우 밸런스**가 초 단위로 새로 생겼다 (양발 파워미터).
 - **웹훅 → 폴링.** intervals.icu 웹훅은 OAuth 앱 전용이라 개인 키로는 15분 폴링이다. 새 활동이 없으면
   뒤를 건너뛴다(skipped — 실패가 아니다). 하루 ~100회로 한도의 2%.
-- **잃은 것:** 라이덕 분석(Strava description 에 쓰이던 훈련부하) — 9/29 까지만 남는다.
+  intervals.icu 정기 점검(`503 Maintenance until …`)도 건너뜀으로 — 15분 뒤 폴링이 메운다.
+- **라이덕 → intervals.icu 훈련부하.** 라이덕 분석(Strava description 에 쓰이던 체력/피로)은 9/29 까지만 남는다.
+  체력·피로는 intervals.icu 의 일별 CTL/ATL(`mart_fitness_daily`)로 바꿨다 — 쉬는 날에도 값이 있다.
+  부하 계산이 달라 두 척도를 이어 읽지 않는다.
 - 이전 Strava 경로(업로드 웹훅 + 라이덕 분석 조건 대기 + 공유 앱 구독을 nginx `mirror` 로 복제)의
   코드는 `ingest/strava/` · `airflow/webhook/` 에 남겨 두었다.
 
@@ -316,7 +320,7 @@ ingest/intervals/ 수집 — intervals.icu → 기존 원본 계약 변환 (2026
 ingest/strava/   수집 — Strava 수집기 · OAuth (~2026-09-29, 보존)
 ingest/          Bronze — 원본 → Iceberg (증분), 스트림 수집, 적재 감사 기록
 transform/       Silver — 정규화·중복 판정·시계열 통합
-dbt/             Gold   — 모델 17개 + 테스트 86개
+dbt/             Gold   — 모델 18개 + 테스트 92개
 airflow/dags/    메인 파이프라인 · intervals 폴링 · 로그 정리 · 알림 점검
 airflow/webhook/ Strava 웹훅 수신기 + nginx mirror 예시
 scripts/         공용 세션, 파이프라인 러너, 증분 판정, 패리티·테스트 검증, 리포트·차트 생성
