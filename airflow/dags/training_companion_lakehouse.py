@@ -98,9 +98,13 @@ with DAG(
     )
 
     # ── Bronze — 서로 독립. 소스가 다르다. ──
+    # 수집이 intervals.icu 점검으로 건너뛰어져도(exit 99 → skipped) 받아 둔 원본으로 계속 간다 —
+    # 22:00 실행은 새 활동이 없어도 리포트의 "오늘" 을 갱신해야 한다. 수집 실패는 여전히 멈춘다.
     bronze_activities = spark_task(dag, "bronze_activities", "ingest/bronze_activities.py")
     bronze_trackpoints = spark_task(dag, "bronze_trackpoints", "ingest/bronze_trackpoints.py")
     bronze_streams = spark_task(dag, "bronze_streams", "ingest/bronze_streams.py")
+    for t in (bronze_activities, bronze_trackpoints, bronze_streams):
+        t.trigger_rule = "none_failed"
 
     # ── Silver ──
     silver_activities = spark_task(dag, "silver_activities", "transform/silver_activities.py")

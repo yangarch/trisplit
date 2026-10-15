@@ -69,6 +69,14 @@ class IntervalsError(Exception):
     pass
 
 
+class IntervalsMaintenance(IntervalsError):
+    """intervals.icu 정기 점검 (HTTP 503 "Maintenance until …"). 실패가 아니라 건너뛸 일이다."""
+
+
+# BashOperator 의 skip_on_exit_code 기본값 — 이 코드로 끝나면 태스크가 skipped 가 된다
+EXIT_SKIP = 99
+
+
 def _auth() -> str:
     key = os.environ.get("INTERVALS_API_KEY", "").strip()
     if not key:
@@ -89,6 +97,8 @@ def get(path: str) -> object:
                 time.sleep(wait)
                 continue
             body = e.read().decode(errors="replace")[:300]
+            if e.code == 503 and "Maintenance" in body:
+                raise IntervalsMaintenance(f"점검 중 {path}: {body}") from e
             raise IntervalsError(f"HTTP {e.code} {path}: {body}") from e
     raise IntervalsError(f"재시도 실패 {path}")
 
@@ -300,6 +310,11 @@ def main() -> int:
     args = p.parse_args()
     try:
         return args.func(args)
+    except IntervalsMaintenance as e:
+        # 점검은 보통 15분 안팎 — 다음 폴링이 메운다. 알림을 보내지 않게 실패가 아닌 건너뜀으로.
+        # 활동마다 state 를 저장하므로 중간에 점검이 시작돼도 받은 것은 남는다.
+        print(f"[~] {e} — 건너뜀", file=sys.stderr)
+        return EXIT_SKIP
     except IntervalsError as e:
         print(f"[!] {e}", file=sys.stderr)
         return 1

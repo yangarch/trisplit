@@ -7,6 +7,7 @@ intervals.icu 폴링 — 15분마다 새 활동을 확인하고, 있을 때만 �
 
     fetch ──(NEW>0)──▶ trigger_pipeline ─▶ training_companion_lakehouse
           └(NEW=0)──▶ 건너뜀 (skipped — 실패가 아니다)
+    intervals.icu 점검(503 "Maintenance until …") → fetch 가 exit 99 → 건너뜀 (알림 없음)
 
 수집 태스크는 메인 DAG 의 fetch_intervals 와 같은 pool(intervals_api, 슬롯 1)을 쓴다 —
 둘이 동시에 state.json 을 고치지 않게.
