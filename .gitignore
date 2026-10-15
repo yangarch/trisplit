@@ -25,3 +25,6 @@ config/gear_names.json
 
 # OS
 .DS_Store
+
+# 로컬 진행 기록 — 서버 주소·개인 운영 정보 포함
+progress.md
