@@ -30,6 +30,8 @@ ROOT = LAKEHOUSE.parent
 sys.path.insert(0, str(LAKEHOUSE / "scripts"))
 import status_text as stx  # noqa: E402
 from spark_session import get_spark  # noqa: E402
+from review_pacing import from_spark as pacing_from_spark  # noqa: E402
+import pacing_review  # noqa: E402
 
 SPORT_ORDER = ["cycling", "swimming", "running", "walking", "other"]
 
@@ -196,6 +198,10 @@ def main() -> int:
         w(f"| {r['start_date_key']} | {fmt(r['distance_km'])}km | {fmt(r['moving_h'], 2)}h | "
           f"{fmt(r['np_computed'], 0)} | {fmt(r['np_strava'], 0)} | "
           f"{fmt(r['intensity_factor'], 2)} | {fmt(r['tss'], 0)} | {r['name'][:28]} |")
+    w("")
+
+    # Time/coverage-aware evidence; no model API call, no automatic FTP change.
+    w(pacing_review.markdown(pacing_from_spark(spark, float(ftp))))
     w("")
 
     # ── 훈련부하 (intervals.icu) ── 2026-09-30 부터 라이덕 체력/피로를 대신한다. 척도가 달라 이어 읽지 않는다.

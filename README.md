@@ -27,6 +27,40 @@ Gold 마트가 94 개 지표에서 같은 숫자를 낸다는 것을 셀 단위�
 | 리포트 | 마크다운(상담 입력) + HTML 두 페이지 — 「지금」(전 종목 현황·최근 운동) · 「기록」(월·연·전체) | Python, 인라인 SVG, nginx |
 | 운영 | 의존 그래프 · 스케줄 · 이벤트 트리거 · 실패 알림 | Airflow 3 (Docker Compose, 홈서버) |
 
+## 장거리 힘 배분 복기 (2026-10)
+
+질문은 “초반 어디에 힘을 썼고, 후반 비슷한 구간에서 실제로 얼마를 냈는가?”다.
+`scripts/pacing_review.py`는 숫자를 계산하고 기존 Markdown/HTML 리포트에 근거를 넣는다.
+모델 호출·FTP 자동 변경은 하지 않는다. AI 상담은 이 근거와 사용자 설명을 함께 읽는다.
+
+- 시간 적분: 5초 이하 샘플 간격만 전방 유지로 1초 재표본화. 긴 누락은 채우지 않으며 실제 0W는 유효한 값이다.
+- 초반 노력: 시작 90분의 기록된 kJ, 30초 평균이 FTP 앵커를 넘는 시간과 20초 이상 이어지는 이벤트의 시점. 과거의 실측 FTP/무산소 소모량으로 해석하지 않는다.
+- 비교: 최근 3시간 이상 야외 라이딩의 후반부에서 페달링이 이어진 5분 창을 찾고, 최근 180일의 같은 자전거·진행 방향·GPS 위치 5곳(각 180m 이내)·거리(±15%)·경사(±1.5%p)가 유사한 창과 비교한다. 동일 경로를 완전히 보장하지 않으며 바람·의도·파워미터 교정은 미통제다.
+- 품질: 파워 98%·이동 95%·페달링 80% 이상, 평균 경사 -0.5% 미만 제외. 비교 전 누적 파워 누락이 15%를 넘으면 제외한다. 추정 파워(`device_watts=False`)는 제외한다.
+- 비교창은 이전 기록 일량이 150kJ 이상 적은 것으로 제한한다. GPS 유사도 순으로 활동당 1개·최대 5개를 고르며, 출력이 높은 창만 고르지 않는다. 대상 창끼리는 겹치지 않는다. 시간순 최대 5행만 화면에 표시하고 전체 근거는 JSON으로 반환한다.
+- 장비 미할당은 같은 활동 내부에서만 비교한다. 비교 불충분 시 그대로 표시하고 초반 노력 시점과 다음 확인 질문을 제공한다. 출력 차이를 피로·보급 부족의 증거로 단정하지 않는다.
+- 기존 `mart_ride_durability`는 `ntile(4)`로 기록 샘플을 나누는 계산을 유지한다. HTML의 경과시간 4분할 표기를 기록 샘플 4분할로 바로잡고, 비율만으로 원인을 확정하는 설명을 제거했다. 새 분석의 5분 창은 실제 경과시간 기준이다.
+
+```bash
+# 운영 환경의 기존 Silver를 읽는 AI 도구 출력 (외부 AI 호출 없음)
+python scripts/review_pacing.py --format json
+python scripts/review_pacing.py --target-id <activity-id> --format markdown
+
+# Spark 없이 로컬 백업 검증. 현재 수집을 수행하지 않음.
+python scripts/review_pacing.py --source backup --root /path/to/training-companion \
+  --ftp <anchor-watts> --format html --out /private/path/pacing.html
+
+# 합성 데이터만 사용하는 테스트. Spark·네트워크 불필요.
+python3 -m unittest discover -s tests -v
+```
+
+백업 어댑터는 활동 JSON 두 경로(`activities/strava/raw-gpx`, `activities/intervals/normalized`)와
+`lakehouse/raw/streams/*.json.gz`를 읽는다. Silver의 동시기록 세션화 방식을 따라 중복을 제외하지만
+개별 소스의 누락/정규화 차이로 운영 테이블과 값이 다를 수 있다. 비교 대상은 요청한 활동 시점 이전으로 제한한다.
+`--ftp` 미지정 시 Spark는 `ftp_log` 현재값을 쓰고 백업 모드는 기준초과 계산을 생략한다.
+개인 분석 결과는 이 공개 저장소 밖에 저장한다. JSON에는 원본 GPS 좌표를 넣지 않는다.
+AI 상담 계약은 [`scripts/pacing_agent_prompt.md`](scripts/pacing_agent_prompt.md)에 있다.
+
 ## 규모
 
 | 테이블 | 행 |

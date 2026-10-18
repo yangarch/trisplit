@@ -31,6 +31,8 @@ sys.path.insert(0, str(LAKEHOUSE / "scripts"))
 import status_text as stx  # noqa: E402
 import svg_charts as sc  # noqa: E402
 from spark_session import get_spark  # noqa: E402
+from review_pacing import from_spark as pacing_from_spark  # noqa: E402
+import pacing_review  # noqa: E402
 
 # 컨테이너는 UTC 다. date.today() 를 쓰면 KST 00~09시 실행(아침 운동 업로드 직후)의
 # 리포트 날짜가 하루 밀린다 — dbt 쪽 macros/today_kst.sql 과 같은 이유.
@@ -310,21 +312,25 @@ def main() -> int:
       'Z1 에는 코스팅·정지(0W)가 포함된다 — 기성 도구와 같은 관행이다.</div>')
 
     # ── 지속력 ──
-    w("<h2>지속력 <span class='meta'>3시간+ 라이딩, 경과시간 4분할 NP</span></h2>")
+    w("<h2>장거리 분할 출력 <span class='meta'>3시간+ 라이딩, 기록 샘플 4분할 NP</span></h2>")
     dur = q("""SELECT name, start_date_key, distance_km, np_q1, np_q2, np_q3, np_q4,
                       durability_ratio
                FROM tc.gold.mart_ride_durability ORDER BY distance_km DESC LIMIT 6""")
     rides = [(f'{r["name"][:10]}', float(r["distance_km"]),
               [float(r[f"np_q{i}"]) if r[f"np_q{i}"] else None for i in (1, 2, 3, 4)],
-              float(r["durability_ratio"])) for r in dur]
+              float(r["durability_ratio"])) for r in dur if r["durability_ratio"] is not None]
     w(f'<div class="card">{sc.durability_slopes(rides)}</div>')
     avg = q("SELECT avg(durability_ratio) a, count(*) n FROM tc.gold.mart_ride_durability")[0]
     w(f'<div class="note">3시간+ {avg["n"]}건 평균 비율 <b>{f(avg["a"],3)}</b>. '
-      '1.0 이면 페이스 균일, 0.8 이하면 후반 페이드가 크다 — 보급·페이싱·체력 중 하나를 본다.</div>')
+      '후반/초반의 기록된 NP 비율이다. 경로·경사·정차·주행 목적이 달라질 수 있어 '
+      '이 비율만으로 체력 저하나 보급 문제를 확정하지 않는다. NP는 기록된 포인트 기준이며, '
+      '비율 미산출 활동은 아래 표에서 확인한다.</div>')
     w(table(["일자", "라이딩", "km", "Q1", "Q2", "Q3", "Q4", "비율"],
             [[str(r["start_date_key"]), r["name"][:22], f(r["distance_km"], 0),
               f(r["np_q1"], 0), f(r["np_q2"], 0), f(r["np_q3"], 0), f(r["np_q4"], 0),
               f(r["durability_ratio"], 3)] for r in dur]))
+
+    w(pacing_review.html(pacing_from_spark(spark, float(ftp))))
 
     w('<footer>생성: <code>lakehouse/scripts/build_html.py</code> — '
       'Bronze/Silver/Gold(Iceberg) + dbt 마트 기반. 인라인 SVG, 외부 의존 없음.<br>'
