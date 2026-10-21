@@ -27,6 +27,10 @@ vars:
   grind_ftp_pct: 75             # FTP 의 이 % 이상 파워 → "저케이던스 고토크" 초
   climb_grade_min: 4            # 이 경사(%) 이상 → 클라임 초
 
+  # 파워 끊김 판정 (mart_ride_durability). 분할 안에서 watts > 0 인 점의 비율이 이 미만이면
+  # 파워미터가 꺼진 것으로 본다. 정상 3시간+ 라이딩의 최저 42.8%, 끊긴 분할 0% (2026-10-20 실측).
+  dropout_pedaling_share: 0.2
+
 seeds:
   training_companion:
     # 증상·피팅 기록은 개인 파일이 없으면 헤더만 있는 빈 시드가 된다.

@@ -177,8 +177,11 @@ models:
     columns:
       - name: activity_id
         tests: [unique, not_null]
+      - name: power_dropout
+        description: 파워 끊긴 분할이 있음 (페달링 비율 < dropout_pedaling_share). 그 분할 NP·비율은 NULL.
+        tests: [not_null]
       - name: durability_ratio
-        # 0.3 미만이면 사실상 중단, 2.0 초과면 데이터 이상
+        # 0.3 미만이면 사실상 중단, 2.0 초과면 데이터 이상. 파워 끊김은 NULL 로 빠진다 (위 칸).
         tests:
           - between: {min_value: 0.3, max_value: 2.0}
 

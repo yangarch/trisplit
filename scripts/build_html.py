@@ -314,13 +314,13 @@ def main() -> int:
     # ── 지속력 ──
     w("<h2>장거리 분할 출력 <span class='meta'>3시간+ 라이딩, 기록 샘플 4분할 NP</span></h2>")
     dur = q("""SELECT name, start_date_key, distance_km, np_q1, np_q2, np_q3, np_q4,
-                      durability_ratio
+                      durability_ratio, power_dropout
                FROM tc.gold.mart_ride_durability ORDER BY distance_km DESC LIMIT 6""")
     rides = [(f'{r["name"][:10]}', float(r["distance_km"]),
               [float(r[f"np_q{i}"]) if r[f"np_q{i}"] else None for i in (1, 2, 3, 4)],
               float(r["durability_ratio"])) for r in dur if r["durability_ratio"] is not None]
     w(f'<div class="card">{sc.durability_slopes(rides)}</div>')
-    avg = q("SELECT avg(durability_ratio) a, count(*) n FROM tc.gold.mart_ride_durability")[0]
+    avg = q("SELECT avg(durability_ratio) a, count(durability_ratio) n FROM tc.gold.mart_ride_durability")[0]
     w(f'<div class="note">3시간+ {avg["n"]}건 평균 비율 <b>{f(avg["a"],3)}</b>. '
       '후반/초반의 기록된 NP 비율이다. 경로·경사·정차·주행 목적이 달라질 수 있어 '
       '이 비율만으로 체력 저하나 보급 문제를 확정하지 않는다. NP는 기록된 포인트 기준이며, '
@@ -328,7 +328,7 @@ def main() -> int:
     w(table(["일자", "라이딩", "km", "Q1", "Q2", "Q3", "Q4", "비율"],
             [[str(r["start_date_key"]), r["name"][:22], f(r["distance_km"], 0),
               f(r["np_q1"], 0), f(r["np_q2"], 0), f(r["np_q3"], 0), f(r["np_q4"], 0),
-              f(r["durability_ratio"], 3)] for r in dur]))
+              "파워 끊김" if r["power_dropout"] else f(r["durability_ratio"], 3)] for r in dur]))
 
     w(pacing_review.html(pacing_from_spark(spark, float(ftp))))
 

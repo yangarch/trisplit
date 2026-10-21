@@ -11,6 +11,12 @@
 --
 -- 3시간 이상 라이딩만 본다 — 짧은 라이딩은 4분할이 의미가 없다.
 -- NP 는 구간별로 각각 계산한다 (30초 이동평균 → 4제곱 평균 → 4제곱근).
+--
+-- 파워 끊김 — 파워미터가 중간에 꺼지면 그 뒤가 null 이 아니라 **0W 로** 실려 온다
+-- (2026-10-20 205km: 4.9h 이후 파워·케이던스 0, 심박·속도는 정상 → 비율 0.0 으로 테스트 실패).
+-- 0W 는 코스팅에서도 정상이라 점 하나로는 못 가른다. 분할 안에서 페달링(watts > 0) 비율을 본다:
+-- 3시간+ 라이딩 27건 108분할의 최저가 42.8%(중앙 83%), 끊긴 분할은 0% — 사이 {{ var('dropout_pedaling_share') }} 로 자른다.
+-- 끊긴 분할의 NP 와 비율은 NULL (지어내지 않는다), 행은 남기고 power_dropout 으로 표시한다.
 
 with long_rides as (
     select activity_id
@@ -41,13 +47,25 @@ rolling as (
     from pts
 ),
 
-np_by_quarter as (
+pedaling as (
     select
         activity_id,
         quarter,
-        pow(avg(pow(p30, 4)), 0.25) as np
-    from rolling
+        avg(case when watts > 0 then 1.0 else 0.0 end) as pedaling_share
+    from pts
     group by activity_id, quarter
+),
+
+np_by_quarter as (
+    select
+        r.activity_id,
+        r.quarter,
+        case when max(d.pedaling_share) >= {{ var('dropout_pedaling_share') }}
+             then pow(avg(pow(r.p30, 4)), 0.25) end as np,
+        max(d.pedaling_share) < {{ var('dropout_pedaling_share') }} as dropped
+    from rolling r
+    join pedaling d using (activity_id, quarter)
+    group by r.activity_id, r.quarter
 ),
 
 pivoted as (
@@ -56,7 +74,8 @@ pivoted as (
         max(case when quarter = 1 then np end) as np_q1,
         max(case when quarter = 2 then np end) as np_q2,
         max(case when quarter = 3 then np end) as np_q3,
-        max(case when quarter = 4 then np end) as np_q4
+        max(case when quarter = 4 then np end) as np_q4,
+        bool_or(dropped)                         as power_dropout
     from np_by_quarter
     group by activity_id
 )
@@ -73,6 +92,8 @@ select
     p.np_q2,
     p.np_q3,
     p.np_q4,
+    p.power_dropout,
+    -- 끊긴 분할이 있으면 NP 가 NULL 이라 비율도 저절로 NULL 이 된다
     p.np_q4 / nullif(p.np_q1, 0)                        as durability_ratio,
     (p.np_q3 + p.np_q4) / nullif(p.np_q1 + p.np_q2, 0)  as second_half_ratio
 from pivoted p
