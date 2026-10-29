@@ -61,6 +61,9 @@ RUN_TS = datetime.now(tz=timezone.utc)
 # overview.py 와 동일하게 유지할 것 — 어긋나면 6단계 패리티 검증이 깨진다.
 CYCLING_TYPES = ["Ride", "VirtualRide", "EBikeRide", "GravelRide", "MountainBikeRide"]
 RUN_TYPES = ["Run", "TrailRun", "VirtualRun"]
+# Strava 는 오픈워터도 "Swim" 으로 줬지만, intervals.icu 는 Garmin 종류 그대로 "OpenWaterSwim" 을 준다
+# (2026-10-26 부터 빠졌다 — "Swim" 만 보던 판정이라 other 로 떨어져 리포트에 안 나왔다).
+SWIM_TYPES = ["Swim", "OpenWaterSwim"]
 WALK_TYPES = ["Walk", "Hike"]
 
 # 장비 이름은 참조 데이터다. 변환 코드에 박아두면 자전거를 바꿀 때마다 코드를 고쳐야 하고,
@@ -81,7 +84,7 @@ def main() -> int:
     sport = (
         F.when(F.col("type").isin(CYCLING_TYPES), "cycling")
         .when(F.col("type").isin(RUN_TYPES), "running")
-        .when(F.col("type") == "Swim", "swimming")
+        .when(F.col("type").isin(SWIM_TYPES), "swimming")
         .when(F.col("type").isin(WALK_TYPES), "walking")
         .otherwise("other")
     )
