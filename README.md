@@ -249,6 +249,12 @@ API 앱이 비활성이 됐다 — 모든 호출이 `403 Application Status Inac
 - 이전 Strava 경로(업로드 웹훅 + 라이덕 분석 조건 대기 + 공유 앱 구독을 nginx `mirror` 로 복제)의
   코드는 `ingest/strava/` · `airflow/webhook/` 에 남겨 두었다.
 
+### 밖에서 보기 — 리포트만, HTTPS + 비밀번호
+
+리포트(:8090)는 LAN 에서 서빙하고, 밖에서는 메인 서버 nginx 가 HTTPS + basic auth 로 앞에 선다
+(`airflow/report/nginx-public.conf.example`). GPS·심박·증상이 들어 있는 페이지라 색인 금지·읽기 전용·IP 당 속도 제한.
+Airflow(:8080)는 실행·삭제 권한이 있는 관리 화면이라 열지 않는다.
+
 ### 실패하면 알린다
 
 - 태스크가 재시도까지 실패하면 `on_failure_callback` 이 ntfy 로 폰에 푸시한다. 공개 서버라

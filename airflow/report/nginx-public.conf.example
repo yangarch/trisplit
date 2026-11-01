@@ -1,0 +1,51 @@
+# 훈련 리포트(파이프라인 서버 :8090)를 밖에서 — 메인 서버 nginx 가 HTTPS + 비밀번호로 앞에 선다.
+#
+# 리포트에는 GPS 경로·심박·증상 기록이 들어 있다. 그래서:
+#   - 리포트만 연다. Airflow(:8080)는 실행·삭제 권한이 있는 관리 화면이라 LAN 에 둔다.
+#   - 비밀번호(basic auth)는 HTTPS 위에서만 — 80 은 certbot 이 443 으로 돌리는 리다이렉트만 남긴다.
+#   - 검색엔진 색인 금지, 공용 캐시 금지, 읽기(GET/HEAD)만.
+#   - 비밀번호 대입을 늦추려고 IP 당 요청 속도를 묶는다. 리포트는 페이지마다 HTML 하나라(인라인 SVG) 넉넉하다.
+#
+# 파이프라인 서버의 :8090 은 공유기에서 포워딩하지 않는다 — 밖에서 닿는 길은 이 프록시 하나다.
+#
+# 적용 (메인 서버에서):
+#   1) DNS: report.<도메인> A 레코드 → 공인 IP (기존 서비스 하위 주소와 같은 값)
+#   2) 비밀번호:  sudo htpasswd -c /etc/nginx/.htpasswd-report <아이디>     (apache2-utils)
+#   3) 이 파일을 /etc/nginx/sites-available/report 로, sites-enabled 에 링크
+#      sudo nginx -t && sudo systemctl reload nginx
+#   4) 인증서 + 443 + 리다이렉트:  sudo certbot --nginx -d report.<도메인> --redirect
+#
+# 확인:
+#   메인 서버에서  curl -sI http://<파이프라인 서버 LAN IP>:8090/        → 200 (프록시 대상이 닿는가)
+#   폰 LTE 로      https://report.<도메인>                              → 비밀번호 창
+#   LAN 안에서는 공인 IP 로 되돌아오지 못할 수 있다(헤어핀 NAT) — 외부 확인은 폰 데이터로.
+
+limit_req_zone $binary_remote_addr zone=report_rl:10m rate=30r/m;
+
+server {
+    listen 80;
+    server_name report.example.net;               # ← 바꿀 것
+
+    add_header X-Robots-Tag "noindex, nofollow, noarchive" always;
+    add_header Cache-Control "private, no-cache" always;
+    add_header Referrer-Policy "no-referrer" always;
+    add_header X-Content-Type-Options "nosniff" always;
+
+    location / {
+        auth_basic "training report";
+        auth_basic_user_file /etc/nginx/.htpasswd-report;
+
+        limit_req zone=report_rl burst=20 nodelay;
+        limit_except GET HEAD { deny all; }
+
+        proxy_pass http://192.168.0.10:8090;      # ← 파이프라인 서버 LAN IP 로 바꿀 것
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_hide_header Server;
+    }
+
+    location = /robots.txt {
+        auth_basic off;
+        return 200 "User-agent: *\nDisallow: /\n";
+    }
+}
