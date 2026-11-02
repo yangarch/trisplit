@@ -3,7 +3,7 @@
 -- 종목마다 볼 지표가 다르다 — 한 표에 공통 칸 + 종목별 칸:
 --   사이클  NP(직접 계산) · IF · TSS · 라이덕 훈련량
 --   수영    100m 페이스 (Strava 평균 속도 기준 — 휴식 포함이라 강습/자유수영 비교엔 주의)
---           GPS 없는 오픈워터 기록은 거리가 추정치라 페이스를 비운다 (swim_distance_estimated)
+--           휴식을 구분하지 않은 기록(애플워치)은 휴식 포함 페이스다 — swim_rest_included 로 표시
 --   러닝    km 페이스
 -- 증상 로그에 적은 게 있으면 symptom_rows > 0.
 
@@ -33,9 +33,8 @@ select
     p.tss,
     r.load                                                              as riduck_load,
     -- 수영 / 러닝 페이스 (초). 속도 0 이면 NULL — ANSI 모드는 0 나누기가 에러다
-    case when a.sport = 'swimming' and not a.swim_distance_estimated
-         then 100.0 / nullif(a.average_speed, 0) end                    as pace_s_per_100m,
-    a.swim_distance_estimated,
+    case when a.sport = 'swimming' then 100.0  / nullif(a.average_speed, 0) end as pace_s_per_100m,
+    a.swim_rest_included,
     case when a.sport = 'running'  then 1000.0 / nullif(a.average_speed, 0) end as pace_s_per_km,
     coalesce(s.symptom_rows, 0)                                         as symptom_rows
 from {{ ref('stg_activities') }} a

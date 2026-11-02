@@ -34,10 +34,10 @@ select
     suffer_score,
     is_indoor,
     has_gps,
-    -- 수영 거리를 믿을 수 없는 기록 — 오픈워터 모드인데 GPS 가 없다 (= 실내 수영장에서 오픈워터로 기록).
-    -- 오픈워터는 GPS 로 거리를 잰다. 실내에선 추정치라 같은 47분이 725m~1,775m 로 들쭉날쭉했다(애플워치, 2026-10~11).
-    -- 횟수·시간에는 넣고, 거리에 기대는 페이스에서만 뺀다.
-    (type = 'OpenWaterSwim' and not coalesce(has_gps, false)) as swim_distance_estimated,
+    -- 수영 기록이 벽에서 쉬는 시간을 따로 구분하지 않았나 — 그러면 "평균 페이스" 가 휴식 포함이다.
+    -- 애플워치는 moving_time = elapsed_time (85건 모두 이동/전체 0.98~1.0), 가민은 헤엄친 시간만(중앙 0.27).
+    -- 애플워치 거리는 레인 카운트라 정확하다 (전부 25m 배수) — 다른 건 시간뿐이다.
+    (sport = 'swimming' and moving_time >= 0.95 * elapsed_time) as swim_rest_included,
     commute,
     description
 

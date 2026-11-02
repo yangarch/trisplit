@@ -43,16 +43,23 @@ models:
     description: >
       수영 월별 거리가중 평균 페이스 (overview.py 4절 이식).
       Strava 평균속도는 휴식 포함이라 강습/자유수영 분리 없이 추세 파악 용도로만 쓸 것.
-      GPS 없는 오픈워터 기록(거리 추정치)은 제외.
+      pace_s_per_100m 은 헤엄친 시간 기준(휴식을 구분한 기록만), pace_with_rest_s_per_100m 은 휴식 포함(모든 기록).
     columns:
       - name: month
         tests: [unique, not_null]
       - name: pace_s_per_100m
         tests:
-          # 100m 당 60~300초 밖이면 데이터가 이상한 것이다 (세계기록 ~47초, 걸어도 300초 안쪽)
+          # 헤엄친 시간 기준 100m 60~300초 밖이면 데이터가 이상하다 (세계기록 ~47초)
           - between:
               min_value: 60
               max_value: 300
+      - name: pace_with_rest_s_per_100m
+        tests:
+          - not_null
+          # 휴식 포함은 강습·드릴 날 6분대도 나온다 (2026-11-02 6:36). 15분/100m 를 넘으면 기록이 깨진 것
+          - between:
+              min_value: 60
+              max_value: 900
 
   - name: mart_ride_power
     description: >
