@@ -276,14 +276,14 @@ def main() -> int:
             w(f"- 총 활동: **{s['activities']}건**, 거리 **{fmt(s['distance_km']*1000, 0)} m**, "
               f"시간 **{fmt(s['moving_h'])} h**")
         w("")
-        w("> ⚠ 애플워치는 벽에서 쉬는 시간을 구분하지 않는다 — 헤엄친 페이스는 휴식을 구분한 기록(가민)만,")
-        w("> 휴식 포함 페이스는 전체 기록으로 낸다. 강습/자유수영 구분은 없다. 가이드: `activities/swimming/notes-on-pace.md`.")
+        w("> ⚠ 페이스는 헤엄친 시간 기준 — 휴식을 구분하는 기록(가민)만. 애플워치는 휴식을 구분하지 않아 빠진다.")
+        w("> 강습/자유수영 구분은 없다. 가이드: `activities/swimming/notes-on-pace.md`.")
         w("")
-        w("| 월 | 활동 | 거리 m | 헤엄친 페이스 /100m (기록 수) | 휴식 포함 /100m |")
-        w("|:-:|---:|---:|---:|---:|")
+        w("| 월 | 활동 | 거리 m | 헤엄친 페이스 /100m (반영 기록 수) |")
+        w("|:-:|---:|---:|---:|")
         for r in sw:
             w(f"| {r['month']} | {r['swims']} | {fmt(r['distance_m'], 0)} | "
-              f"{r['pace_mmss'] or '·'} ({r['swims_rest_separated']}) | {r['pace_with_rest_mmss']} |")
+              f"{r['pace_mmss'] or '·'} ({r['swims_rest_separated']}) |")
         w("")
 
     # ── 중복 제외 내역 ──
