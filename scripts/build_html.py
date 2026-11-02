@@ -204,7 +204,7 @@ def main() -> int:
                 bits.append(f'훈련량 {r["riduck_load"]}')
             return " · ".join(bits)
         if r["sport"] == "swimming":
-            return stx.pace(r["pace_s_per_100m"], "100m")
+            return "거리 추정(GPS 없음)" if r["swim_distance_estimated"] else stx.pace(r["pace_s_per_100m"], "100m")
         return stx.pace(r["pace_s_per_km"], "km")
 
     rows_html = []

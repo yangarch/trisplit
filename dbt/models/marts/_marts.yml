@@ -43,6 +43,7 @@ models:
     description: >
       수영 월별 거리가중 평균 페이스 (overview.py 4절 이식).
       Strava 평균속도는 휴식 포함이라 강습/자유수영 분리 없이 추세 파악 용도로만 쓸 것.
+      GPS 없는 오픈워터 기록(거리 추정치)은 제외.
     columns:
       - name: month
         tests: [unique, not_null]

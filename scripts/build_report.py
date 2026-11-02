@@ -99,7 +99,8 @@ def main() -> int:
                     f"TSS {r['tss']:.0f}" if r["tss"] is not None else "",
                     f"라이덕 훈련량 {r['riduck_load']}" if r["riduck_load"] is not None else ""] if x)
             elif r["sport"] == "swimming":
-                m = stx.pace(r["pace_s_per_100m"], "100m")
+                m = ("거리 추정(GPS 없음)" if r["swim_distance_estimated"]
+                     else stx.pace(r["pace_s_per_100m"], "100m"))
             else:
                 m = stx.pace(r["pace_s_per_km"], "km")
             d = r["start_date_key"]

@@ -34,6 +34,10 @@ select
     suffer_score,
     is_indoor,
     has_gps,
+    -- 수영 거리를 믿을 수 없는 기록 — 오픈워터 모드인데 GPS 가 없다 (= 실내 수영장에서 오픈워터로 기록).
+    -- 오픈워터는 GPS 로 거리를 잰다. 실내에선 추정치라 같은 47분이 725m~1,775m 로 들쭉날쭉했다(애플워치, 2026-10~11).
+    -- 횟수·시간에는 넣고, 거리에 기대는 페이스에서만 뺀다.
+    (type = 'OpenWaterSwim' and not coalesce(has_gps, false)) as swim_distance_estimated,
     commute,
     description
 

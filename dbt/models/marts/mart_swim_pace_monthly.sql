@@ -6,6 +6,9 @@
 -- ⚠️ overview.py 의 경고를 그대로 옮긴다 — Strava swim 의 평균 속도는 휴식 시간을 포함한다.
 -- 강습과 자유수영을 섞어 비교하면 오해가 생긴다 (`activities/swimming/notes-on-pace.md`).
 -- 이 마트는 추세 파악용이고, 강습/자유수영 분리는 하지 않는다.
+--
+-- GPS 없는 오픈워터 기록(swim_distance_estimated)은 뺀다 — 거리가 추정치라 페이스가 의미 없다.
+-- 2026-11-02 애플워치 47분 725m(6:36/100m) 한 건이 11월 평균이 되어 between 테스트를 깼다.
 
 with swims as (
     select
@@ -16,6 +19,7 @@ with swims as (
     from {{ ref('stg_activities') }}
     where sport = 'swimming'
       and average_speed > 0
+      and not swim_distance_estimated
 )
 
 select
