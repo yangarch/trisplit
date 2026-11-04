@@ -85,6 +85,12 @@ live sender until the following operational cutover is performed.
    fresh online backup after it is stopped, and migrate that final copy to the
    new live volume. Reconcile that every legacy processed ID is present. This
    final snapshot is necessary: a prior test backup may miss newly sent swims.
+   A SQLite online backup can retain a WAL journal-mode header. Before mounting
+   that **backup copy** read-only, open the copy once with write access, set
+   `PRAGMA journal_mode=DELETE`, close it and verify `PRAGMA integrity_check`.
+   This makes the archive self-contained and avoids `SQLITE_CANTOPEN` when no
+   writable directory exists for WAL sidecars. Do not change the live source's
+   journal mode. The migration target returns to WAL when the app opens it.
 5. Configure `COACH_SINCE` on both components to the chosen local cutover date,
    explicit owner and secrets. Point the existing protected app URL at the new
    port. Enable `COACH_EXPORT_ENABLED` in Airflow, and enable model/notification
