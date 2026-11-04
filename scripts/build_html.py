@@ -20,6 +20,7 @@ Gold 마트 → HTML 리포트 (인라인 SVG 차트).
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import datetime, timedelta
 from html import escape
@@ -136,6 +137,9 @@ def head(title: str, active: str, meta_line: str) -> list[str]:
     # viewport 메타가 없으면 모바일 브라우저가 폭 980px 을 가정하고 축소해 버린다.
     tabs = [("index.html", "지금", "now"), ("records.html", "기록", "records")]
     nav = "".join(f'<a href="{h}" class="{"on" if k == active else ""}">{t}</a>' for h, t, k in tabs)
+    coach_url = os.environ.get("TC_COACH_URL", "")
+    if coach_url.startswith(("https://", "http://")):
+        nav += f'<a href="{escape(coach_url, quote=True)}">운동 분석</a>'
     return [
         '<meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width, initial-scale=1">',

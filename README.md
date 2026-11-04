@@ -1,5 +1,15 @@
 # trisplit
 
+**Training Companion 통합 프로젝트의 코드 기준본**입니다. 운동 수집·집계·리포트에
+기존 fingu의 분석·기록·메신저 기능을 `apps/coach`로 통합합니다. 사이클·러닝·수영을
+동일한 검증 데이터에서 분석하며, 개인 건강 기록은 공개 저장소 밖의
+`training-companion` 작업 공간에 계속 보관합니다.
+
+- [통합 구조·운영 전환·레거시 보존](docs/consolidation.md)
+- [세 종목 AI 분석·기존 수영 이력 이관·알림](apps/coach/README.md)
+- [기존 구성의 레거시 보존·개발 기준](docs/legacy.md)
+- 운영 전환 전에는 기존 fingu가 현재 발송을 담당합니다. 새 분석·발송은 기본 비활성입니다.
+
 사이클·수영·러닝 훈련 데이터 파이프라인을 **메달리온 아키텍처 레이크하우스**로 재구축하고,
 홈서버에서 매일 운영하는 기록. PySpark · Apache Iceberg · dbt · Airflow.
 

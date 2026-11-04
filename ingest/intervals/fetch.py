@@ -25,7 +25,7 @@ intervals.icu 수집기 — Garmin 기록을 intervals.icu 경유로 받아 **�
   grade_smooth  고도/거리 차분, 약 30m 구간 기울기(%) — 클라임 판정용
   moving        속도 > 0.5 m/s — Strava 의 정지 판정과 같은 용도
 없어지는 것: 라이덕 분석(description 의 훈련부하) — Strava 연동 서비스라 경로에 없다.
-  랩/스플릿 — 이번 단계에선 빈 배열 (수영 랩은 후속).
+  스플릿 — 빈 배열. 수영 랩은 상세 응답(icu_intervals)을 함께 보존한다.
 
 API: 개인 키 Basic 인증(username "API_KEY"), 선수 id 자리에 0.
   ⚠️ User-Agent 를 꼭 지정한다 — Python 기본값(Python-urllib)은 Cloudflare 가 1010 으로 막는다.
@@ -228,13 +228,33 @@ def normalize_activity(aid: int, a: dict, norm_streams: dict) -> dict:
         "external_id": f"garmin:{a['external_id']}" if a.get("external_id") else None,
         "start_latlng": ll[0] if ll else [],
         "end_latlng": ll[-1] if ll else [],
-        "laps": [],
+        "laps": normalize_laps(a.get("icu_intervals") or []),
         "splits_metric": [],
         # bronze 스키마 밖이지만 _raw 에 남는다 — 나중에 쓸 수 있게
         "_intervals": {"id": a["id"], "source": a.get("source"), "avg_lr_balance": a.get("avg_lr_balance"),
                        "crank_length": a.get("crank_length"), "icu_training_load": a.get("icu_training_load"),
                        "icu_ctl": a.get("icu_ctl"), "icu_atl": a.get("icu_atl")},
     }
+
+
+def normalize_laps(intervals: list[dict]) -> list[dict]:
+    """Preserve Garmin 0m rests as well as swimming laps; fingu's input contract."""
+    laps = []
+    for i, iv in enumerate(intervals):
+        distance = float(iv.get("distance") or 0)
+        moving = iv.get("moving_time")
+        if moving is None:
+            moving = iv.get("elapsed_time") or 0
+        speed = iv.get("average_speed")
+        laps.append({
+            "id": i, "lap_index": i + 1, "name": f"Lap {i + 1}",
+            "distance": distance, "moving_time": int(moving),
+            "elapsed_time": int(iv.get("elapsed_time") if iv.get("elapsed_time") is not None else moving),
+            "average_speed": float(speed if speed is not None else distance / moving if moving else 0),
+            "max_speed": float(iv.get("max_speed") or 0),
+            "average_heartrate": iv.get("average_heartrate"),
+        })
+    return laps
 
 
 # ---- 상태 ----
@@ -259,7 +279,10 @@ def cmd_sync(args: argparse.Namespace) -> int:
     newest = (date.today() + timedelta(days=2)).isoformat()
     acts = get(f"/athlete/0/activities?oldest={CUTOVER}&newest={newest}")
     acts = [a for a in acts if (a.get("start_date_local") or "")[:10] >= CUTOVER]
-    todo = [a for a in acts if args.refresh or state["seen"].get(a["id"]) != fingerprint(a)]
+    # One-time lap upgrade only for swims. Existing non-swim sources are unchanged.
+    lap_versions = state.setdefault("swim_laps_version", {})
+    todo = [a for a in acts if args.refresh or state["seen"].get(a["id"]) != fingerprint(a)
+            or (a.get("type") in ("Swim", "OpenWaterSwim") and lap_versions.get(a["id"]) != 1)]
     print(f"[*] intervals.icu {CUTOVER}~ 활동 {len(acts)}건, 새로/바뀐 것 {len(todo)}건")
 
     for i, a in enumerate(sorted(todo, key=lambda x: x["start_date_local"]), 1):
@@ -269,6 +292,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
               f"{a.get('device_name') or ''} → {aid}")
         if args.dry:
             continue
+        listed = a
+        if a.get("type") in ("Swim", "OpenWaterSwim"):
+            detail = get(f"/activity/{a['id']}?intervals=true")
+            if not isinstance(detail, dict) or detail.get("id") != a["id"]:
+                raise IntervalsError("Invalid swim detail response")
+            a = {**a, **detail}
         # 요가·수동 입력처럼 스트림이 없는 활동은 404 일 수 있다 — 빈 스트림으로 (활동 요약은 받는다)
         try:
             streams = get(f"/activity/{a['id']}/streams.json") if a.get("stream_types") else []
@@ -282,7 +311,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
             json.dump(ns, f, ensure_ascii=False)
         (NORM_DIR / f"{day}_{aid}.json").write_text(
             json.dumps(normalize_activity(aid, a, ns), ensure_ascii=False, indent=1) + "\n")
-        state["seen"][a["id"]] = fingerprint(a)
+        state["seen"][a["id"]] = fingerprint(listed)
+        if a.get("type") in ("Swim", "OpenWaterSwim"):
+            lap_versions[a["id"]] = 1
         save_state(state)  # 활동마다 저장 — 중간에 죽어도 받은 것은 다시 받지 않는다
         time.sleep(0.3)
 

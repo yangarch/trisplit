@@ -1,0 +1,15 @@
+services:
+  coach:
+    image: ${COACH_IMAGE:-trisplit/coach:local}
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${COACH_BIND_IP:-127.0.0.1}:${COACH_PORT:-3004}:3003"
+    volumes:
+      - ${COACH_DATA_DIR:?Set a private directory containing migrated coach.db}:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3003/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

@@ -180,6 +180,20 @@ with DAG(
         append_env=True,
     )
 
+    # Same validated Gold snapshot feeds the optional coach. No intervals API
+    # polling in the app. Model/Slack work runs asynchronously in its durable DB.
+    export_coach = BashOperator(
+        task_id="export_coach",
+        bash_command='if [ "${COACH_EXPORT_ENABLED:-false}" != "true" ]; then exit 99; fi; '
+                     f'python "{LAKEHOUSE}/scripts/export_coach.py" --quality-checked --run-id "$COACH_PIPELINE_RUN"',
+        env={**TASK_ENV, "COACH_PIPELINE_RUN": "{{ run_id }}"},
+        append_env=True,
+    )
+    publish_coach = BashOperator(
+        task_id="publish_coach",
+        bash_command=f'python "{LAKEHOUSE}/scripts/publish_coach.py"',
+    )
+
     # ── 의존 그래프 ──
     fetch_intervals >> [bronze_activities, bronze_trackpoints, bronze_streams]
     fetch_intervals >> fetch_wellness >> export_fitness
@@ -192,3 +206,4 @@ with DAG(
 
     [silver_trackpoints, silver_laps_splits] >> export_ftp >> export_body >> export_fitness >> dbt_seed >> dbt_run >> dbt_test
     dbt_test >> [build_report, build_html]
+    dbt_test >> export_coach >> publish_coach

@@ -30,3 +30,15 @@ config/gear_names.json
 
 # 로컬 진행 기록 — 서버 주소·개인 운영 정보 포함
 progress.md
+
+# Coach runtime, copied legacy DBs, credentials and generated private bundles
+**/node_modules/
+**/node_modules
+apps/coach/dist/
+apps/coach/data/
+apps/coach/.env
+*.db
+*.db-*
+*.sqlite*
+*.backup
+coach-outbox/

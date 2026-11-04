@@ -56,6 +56,13 @@ x-airflow-common: &airflow-common
     NTFY_TOPIC: ${NTFY_TOPIC:-}
     # intervals.icu 개인 API 키 (ingest/intervals/fetch.py). Garmin → intervals.icu → 여기.
     INTERVALS_API_KEY: ${INTERVALS_API_KEY:-}
+    # Unified coaching is opt-in until legacy DB/history and delivery are verified.
+    COACH_EXPORT_ENABLED: ${COACH_EXPORT_ENABLED:-false}
+    COACH_SINCE: ${COACH_SINCE:-}
+    COACH_OUTBOX: ${TC_PROJECT_PATH}/reports/coach-outbox
+    COACH_API_URL: ${COACH_API_URL:-}
+    COACH_INGEST_TOKEN: ${COACH_INGEST_TOKEN:-}
+    TC_COACH_URL: ${TC_COACH_URL:-}
   volumes:
     # 호스트와 동일한 절대경로로 마운트 (위 주석 참조).
     # 스크립트가 __file__ 기준 상대경로로 원본 데이터와 웨어하우스를 찾으므로 구조도 유지된다.
