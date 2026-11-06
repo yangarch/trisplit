@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import fs from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 import { WorkoutBundle } from './types/workout';
 
 export interface Job {
@@ -14,6 +15,9 @@ export interface SwimRecord {
   activity_id: number; start_local: string; distance: number | null; moving_time: number | null;
 }
 export interface SwimNote { url: string | null; body: string | null }
+export interface SwimReview {
+  activity_id: number; revision: string; state: string; analysis: string | null; attempts: number;
+}
 
 /** Open a COPY of the legacy DB. Existing tables are retained for rollback. */
 export class CoachStore {
@@ -55,6 +59,11 @@ export class CoachStore {
           athlete_id INTEGER NOT NULL, activity_id INTEGER NOT NULL, url TEXT, body TEXT,
           PRIMARY KEY (athlete_id, activity_id), UNIQUE (athlete_id, url)
         );
+        CREATE TABLE IF NOT EXISTS swim_note_reviews (
+          athlete_id INTEGER NOT NULL, activity_id INTEGER NOT NULL, revision TEXT NOT NULL,
+          state TEXT NOT NULL DEFAULT 'pending', analysis TEXT, attempts INTEGER NOT NULL DEFAULT 0,
+          next_attempt INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (athlete_id, activity_id)
+        );
       `);
       if (this.hasTable('swim_analyses')) {
         this.db.exec(`INSERT OR IGNORE INTO activity_analyses
@@ -66,6 +75,7 @@ export class CoachStore {
           SELECT activity_id, athlete_id FROM swim_analyses`);
       }
       this.db.exec(`UPDATE coach_jobs SET state='pending' WHERE state='analyzing';
+        UPDATE swim_note_reviews SET state='pending' WHERE state='analyzing';
         UPDATE coach_alerts SET state='unknown' WHERE state='sending';
         UPDATE coach_deliveries SET state='unknown', error='Interrupted during delivery; inspect Slack before retrying'
         WHERE state='sending'`);
@@ -181,19 +191,59 @@ export class CoachStore {
       .all(this.ownerId) as { activity_id: number }[];
     return rows.map(r => this.swim(r.activity_id)).filter((r): r is SwimRecord => r !== undefined);
   }
-  saveSwimNote(id: number, note: SwimNote, replace: boolean): boolean {
+  saveSwimNote(id: number, note: SwimNote, replace: boolean, review = false): boolean {
     return this.db.transaction(() => {
       if (!this.swim(id)) return false;
       const duplicate = note.url && this.db.prepare('SELECT 1 FROM swim_notes WHERE athlete_id=? AND url=? AND activity_id<>?')
         .get(this.ownerId,note.url,id);
-      if (duplicate || (!replace && this.swimNote(id))) return false;
+      const previous = this.swimNote(id);
+      if (duplicate || (!replace && previous)) return false;
+      if (previous && previous.url === note.url && previous.body === note.body) return true;
       this.db.prepare(`INSERT INTO swim_notes VALUES (?,?,?,?) ON CONFLICT(athlete_id,activity_id)
         DO UPDATE SET url=excluded.url,body=excluded.body`).run(this.ownerId,id,note.url,note.body);
+      this.deleteSwimReview(id);
+      if (review) this.queueSwimReview(id);
       return true;
     })();
   }
   removeSwimNote(id: number): void {
-    this.db.prepare('DELETE FROM swim_notes WHERE athlete_id=? AND activity_id=?').run(this.ownerId,id);
+    this.db.transaction(() => {
+      this.deleteSwimReview(id);
+      this.db.prepare('DELETE FROM swim_notes WHERE athlete_id=? AND activity_id=?').run(this.ownerId,id);
+    })();
+  }
+  private deleteSwimReview(id: number): void {
+    this.db.prepare('DELETE FROM swim_note_reviews WHERE athlete_id=? AND activity_id=?').run(this.ownerId,id);
+  }
+  queueSwimReview(id: number): void {
+    this.db.prepare(`INSERT INTO swim_note_reviews (athlete_id,activity_id,revision)
+      SELECT athlete_id,activity_id,? FROM swim_notes WHERE athlete_id=? AND activity_id=?
+      ON CONFLICT(athlete_id,activity_id) DO UPDATE SET revision=excluded.revision,
+        state='pending', analysis=NULL, attempts=0, next_attempt=0
+      WHERE swim_note_reviews.state IN ('failed','needs_body')`).run(randomUUID(),this.ownerId,id);
+  }
+  swimReview(id: number): SwimReview | undefined {
+    return this.db.prepare('SELECT * FROM swim_note_reviews WHERE athlete_id=? AND activity_id=?')
+      .get(this.ownerId,id) as SwimReview | undefined;
+  }
+  nextSwimReview(now = Date.now()): SwimReview | undefined {
+    return this.db.prepare(`UPDATE swim_note_reviews SET state='analyzing', attempts=attempts+1
+      WHERE athlete_id=@owner AND activity_id=(SELECT activity_id FROM swim_note_reviews
+        WHERE athlete_id=@owner AND state='pending' AND next_attempt<=@now ORDER BY next_attempt,activity_id LIMIT 1)
+      RETURNING *`).get({owner:this.ownerId,now}) as SwimReview | undefined;
+  }
+  finishSwimReview(job: SwimReview, state: 'complete' | 'failed' | 'needs_body' | 'pending', analysis: string | null = null): void {
+    const next = state === 'pending' ? Date.now() + 2 ** job.attempts * 60000 : 0;
+    this.db.prepare(`UPDATE swim_note_reviews SET state=?,analysis=?,next_attempt=?
+      WHERE athlete_id=? AND activity_id=? AND revision=? AND state='analyzing'`)
+      .run(state,analysis,next,this.ownerId,job.activity_id,job.revision);
+  }
+  swimReviewBundle(id: number): WorkoutBundle | undefined {
+    if (!this.swim(id)) return undefined;
+    const row = this.db.prepare('SELECT payload FROM coach_jobs WHERE activity_id=?').get(id) as {payload:string} | undefined;
+    if (!row) return undefined;
+    const bundle = JSON.parse(row.payload) as WorkoutBundle;
+    return bundle.activity.sport === 'swimming' ? bundle : undefined;
   }
   status(): unknown {
     return {

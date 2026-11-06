@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { createApp } from './app';
 import { CoachStore } from './store';
-import { analyze } from './services/analysis';
+import { analyze, analyzeSwimReview } from './services/analysis';
 import { CoachWorker, sendNotification, sendText } from './services/worker';
 
 const required = (key: string) => {
@@ -15,6 +15,7 @@ const secret = (key: string) => {
   return value;
 };
 const enabled = process.env.COACH_ENABLED === 'true';
+const swimReviews = enabled && process.env.COACH_SWIM_REVIEWS === 'true';
 const notifications = process.env.COACH_SEND_NOTIFICATIONS === 'true';
 if (notifications && !enabled) throw new Error('Notifications require COACH_ENABLED=true');
 const ownerId = Number(required('COACH_OWNER_ATHLETE_ID'));
@@ -31,14 +32,16 @@ const publicUrl = process.env.COACH_PUBLIC_URL ? new URL(process.env.COACH_PUBLI
 if (publicUrl && (publicUrl.protocol !== 'https:' || publicUrl.username || publicUrl.password
     || publicUrl.pathname !== '/' || publicUrl.search || publicUrl.hash)) throw new Error('Invalid COACH_PUBLIC_URL');
 const store = new CoachStore(process.env.DATABASE_URL || './data/coach.db', ownerId);
+const model = process.env.COACH_MODEL || 'claude-sonnet-4-6';
 const app = createApp(store, {
   ingestToken: secret('COACH_INGEST_TOKEN'), adminToken: secret('ADMIN_TOKEN'), sessionSecret: secret('SESSION_SECRET'),
-  secureCookie: process.env.COOKIE_SECURE !== 'false', since, reportUrl,
+  secureCookie: process.env.COOKIE_SECURE !== 'false', since, reportUrl, swimReviews,
 });
 const worker = new CoachWorker(store,
-  b => analyze(b, apiKey, process.env.COACH_MODEL || 'claude-sonnet-4-6'),
+  b => analyze(b, apiKey, model),
   notifications ? a => sendNotification(webhook, a, publicUrl?.origin) : undefined,
-  notifications ? id => sendText(webhook, `🚨 Training Companion 분석 실패 · 활동 ${id}\n자동 재시도는 최대 5회입니다. 관리 상태에서 확인하세요.`) : undefined);
+  notifications ? id => sendText(webhook, `🚨 Training Companion 분석 실패 · 활동 ${id}\n자동 재시도는 최대 5회입니다. 관리 상태에서 확인하세요.`) : undefined,
+  swimReviews ? (record, note, bundle) => analyzeSwimReview(record, note, bundle, apiKey, model) : undefined);
 if (enabled) {
   void worker.tick().catch(() => console.error('Coach worker failed'));
   setInterval(() => void worker.tick().catch(() => console.error('Coach worker failed')), 15000);

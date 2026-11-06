@@ -29,7 +29,7 @@ function textOnly(html: string): string {
 
 export interface DiaryPost {
   title: string; date: string; dateSource: 'text' | 'published' | 'ambiguous'; published: string;
-  distance?: number; duration?: number;
+  distance?: number; duration?: number; body: string;
 }
 
 export function readDiaryHtml(html: string): DiaryPost {
@@ -46,7 +46,7 @@ export function readDiaryHtml(html: string): DiaryPost {
   const distance = /(?:총\s*거리|기록\s*거리)\s*[:：]?\s*(\d[\d,.]*)\s*(km|m|미터)(?![a-z])/i.exec(body);
   const duration = /(?:이동\s*시간|운동\s*시간)\s*[:：]?\s*(\d+)\s*분(?:\s*(\d+)\s*초)?/.exec(body);
   return {
-    title, date: dates.size === 1 ? [...dates][0] : published[1],
+    title, body: body.slice(0, 4000), date: dates.size === 1 ? [...dates][0] : published[1],
     dateSource: dates.size === 1 ? 'text' : dates.size > 1 ? 'ambiguous' : 'published',
     published: `${published[1]}T${published[2]}`,
     distance: distance ? Number(distance[1].replace(/,/g, '')) * (distance[2].toLowerCase() === 'km' ? 1000 : 1) : undefined,

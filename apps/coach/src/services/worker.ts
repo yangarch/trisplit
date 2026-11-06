@@ -1,5 +1,8 @@
-import { CoachStore, Analysis } from '../store';
+import { CoachStore, Analysis, SwimRecord } from '../store';
 import { WorkoutBundle } from '../types/workout';
+import { diaryUrl, fetchDiaryPost } from './swimNotes';
+
+type SwimReviewAnalyzer = (record: SwimRecord, note: string, bundle?: WorkoutBundle) => Promise<string>;
 
 export type DeliveryResult = 'sent' | 'failed' | 'unknown';
 export async function sendText(url: string, text: string): Promise<DeliveryResult> {
@@ -27,7 +30,8 @@ export class CoachWorker {
   constructor(private readonly store: CoachStore,
     private readonly analyze: (bundle: WorkoutBundle) => Promise<string>,
     private readonly notify?: (analysis: Analysis) => Promise<DeliveryResult>,
-    private readonly failureAlert?: (id: number) => Promise<DeliveryResult>) {}
+    private readonly failureAlert?: (id: number) => Promise<DeliveryResult>,
+    private readonly analyzeReview?: SwimReviewAnalyzer) {}
 
   async tick(): Promise<void> {
     if (this.running) return;
@@ -63,6 +67,26 @@ export class CoachWorker {
           this.store.alert(id, result);
         }
       }
+      if (this.analyzeReview) await this.reviewSwim(this.analyzeReview);
     } finally { this.running = false; }
+  }
+
+  private async reviewSwim(analyze: SwimReviewAnalyzer): Promise<void> {
+    const job = this.store.nextSwimReview();
+    if (!job) return;
+    const id = job.activity_id;
+    try {
+      const note = this.store.swimNote(id);
+      const swim = this.store.swim(id);
+      if (!note || !swim) { this.store.finishSwimReview(job, 'failed'); return; }
+      const body = note.body || (note.url && diaryUrl(note.url) ? (await fetchDiaryPost(note.url)).body : '');
+      if (this.store.swimReview(id)?.revision !== job.revision) return;
+      if (!body.trim()) { this.store.finishSwimReview(job, 'needs_body'); return; }
+      const text = await analyze(swim, body, this.store.swimReviewBundle(id));
+      if (!text.trim()) throw new Error('Empty swim review');
+      this.store.finishSwimReview(job, 'complete', text);
+    } catch {
+      this.store.finishSwimReview(job, job.attempts >= 3 ? 'failed' : 'pending');
+    }
   }
 }

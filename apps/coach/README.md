@@ -93,7 +93,14 @@ Keep them outside the code repository. Do not migrate them through Git.
 - `POST /api/swim-catalog`: bearer-authenticated canonical swim lookup data
   containing only IDs, local start times, distances and moving times. The
   publisher sends changes after the existing quality gate. Deploy the receiver
-  before the publisher. Note links and text stay out of model and alert inputs.
+  before the publisher.
+
+With `COACH_ENABLED=true` and `COACH_SWIM_REVIEWS=true`, new or edited notes
+queue a private swim review using the same Claude model. The review uses the
+available workout data and the supplied note text or the supported public diary
+post body. Older workouts may only have catalog summaries. Existing links can
+start a review from the detail screen. Results are separate from the initial
+analysis and the Slack delivery queue.
 
 The worker claims one job at a time. Analysis text, processed history and the
 notification outbox are committed in one SQLite transaction. Model failures

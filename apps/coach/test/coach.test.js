@@ -145,7 +145,7 @@ test('swim wall-rest reconstruction retains distance and refuses sensor gaps', (
 test('API authentication, cutover, signed sessions and HTML escaping protect private history', async () => {
   const store=memory();store.enqueue(bundle(1));store.save(store.nextJob(),'<script>secret()</script>',false);
   const key='a'.repeat(32),secret='b'.repeat(32);
-  const app=createApp(store,{ingestToken:key,adminToken:key,sessionSecret:secret,secureCookie:false,since:'2026-01-01',reportUrl:''});
+  const app=createApp(store,{ingestToken:key,adminToken:key,sessionSecret:secret,secureCookie:false,since:'2026-01-01',reportUrl:'',swimReviews:true});
   const server=app.listen(0,'127.0.0.1');await new Promise(r=>server.once('listening',r));
   const url=`http://127.0.0.1:${server.address().port}`;
   try {
@@ -185,9 +185,11 @@ test('API authentication, cutover, signed sessions and HTML escaping protect pri
     const firstImport = await (await post('/swim-notes/import',{links:noteUrl,date:'2025-10-27',csrf})).text();
     assert.match(firstImport,/자동 연결됨/);
     assert.equal(store.swimNote(8).url,noteUrl);
+    const revision = store.swimReview(8).revision;
     const repeatImport = await (await post('/swim-notes/import',{links:noteUrl,csrf})).text();
     assert.match(repeatImport,/이미 연결됨/);
     assert.doesNotMatch(repeatImport,/\/8\/link/);
+    assert.equal(store.swimReview(8).revision,revision);
     assert.match(await (await fetch(url+'/swim-notes',{headers:signed})).text(),/최근 연결한 후기/);
     assert.equal((await post('/swim-notes/8/link',{url:noteUrl,csrf})).status,303);
     assert.equal((await importCatalog([historical,{...historical,activity_id:9}])).status,200);
@@ -198,6 +200,40 @@ test('API authentication, cutover, signed sessions and HTML escaping protect pri
     assert.equal(store.swimNote(9),undefined);
     assert.equal(store.analyses().length,1);
   } finally {await new Promise(r=>server.close(r));store.close();}
+});
+
+test('swim review combines a historical workout and diary without queuing a regular analysis or Slack delivery', async () => {
+  const store = memory();
+  const historical = {activity_id:8,start_local:'2025-10-27T07:03:00',distance:1500,moving_time:2700};
+  store.saveSwimCatalog([historical]);
+  let calls = 0;
+  const worker = new CoachWorker(store,async()=>{throw Error('Unexpected regular analysis');},
+    async()=>{throw Error('Unexpected Slack delivery');},undefined,async (record,body,bundle) => {
+      calls++;
+      assert.deepEqual(record,historical);
+      assert.equal(bundle,undefined);
+      if (body === 'Initial diary') {
+        store.saveSwimNote(8,{url:null,body:'Updated diary'},true,true);
+        return 'Stale analysis';
+      }
+      assert.equal(body,'Updated diary');
+      return 'Updated analysis';
+    });
+  try {
+    store.saveSwimNote(8,{url:null,body:'Initial diary'},false,true);
+    await worker.tick();
+    assert.equal(store.swimReview(8).state,'pending');
+    assert.equal(store.swimReview(8).analysis,null);
+    await worker.tick();
+    store.saveSwimNote(8,{url:null,body:'Updated diary'},true,true);
+    await worker.tick();
+    assert.equal(calls,2);
+    assert.equal(store.swimReview(8).analysis,'Updated analysis');
+    assert.equal(store.analyses().length,0);
+    assert.equal(store.db.prepare('SELECT count(*) n FROM coach_deliveries').get().n,0);
+    store.removeSwimNote(8);
+    assert.equal(store.swimReview(8),undefined);
+  } finally {store.close();}
 });
 
 test('diary suggestions prefer an explicit earlier swim date and rank compatible distance and time', () => {

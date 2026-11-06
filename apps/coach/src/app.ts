@@ -8,6 +8,7 @@ import { swimNoteRoutes, validSwimCatalog } from './swimNoteRoutes';
 export interface AppConfig {
   ingestToken: string; adminToken: string; sessionSecret: string;
   secureCookie: boolean; since: string; reportUrl: string;
+  swimReviews?: boolean;
 }
 const equal = (a: string, b: string) => !!b && Buffer.byteLength(a) === Buffer.byteLength(b)
   && timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -92,7 +93,7 @@ export function createApp(store: CoachStore, config: AppConfig): express.Express
     if (req.signedCookies.coach_owner === String(store.ownerId)) { next(); return; }
     if (req.method !== 'GET') { res.sendStatus(403); return; }
     res.redirect(`/login?next=${encodeURIComponent(returnTo(req.originalUrl.split('?')[0]))}`);
-  }, swimNoteRoutes(store, page, escape, csrf));
+  }, swimNoteRoutes(store, page, escape, csrf, config.swimReviews));
   app.use((_err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     // Do not echo submitted health data, model requests, or credentials.
     res.status(400).json({ error: 'Request could not be processed' });
