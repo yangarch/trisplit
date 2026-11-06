@@ -28,7 +28,7 @@ function textOnly(html: string): string {
 }
 
 export interface DiaryPost {
-  title: string; date: string; dateSource: 'text' | 'published'; published: string;
+  title: string; date: string; dateSource: 'text' | 'published' | 'ambiguous'; published: string;
   distance?: number; duration?: number;
 }
 
@@ -46,7 +46,8 @@ export function readDiaryHtml(html: string): DiaryPost {
   const distance = /(?:총\s*거리|기록\s*거리)\s*[:：]?\s*(\d[\d,.]*)\s*(km|m|미터)(?![a-z])/i.exec(body);
   const duration = /(?:이동\s*시간|운동\s*시간)\s*[:：]?\s*(\d+)\s*분(?:\s*(\d+)\s*초)?/.exec(body);
   return {
-    title, date: dates.size === 1 ? [...dates][0] : published[1], dateSource: dates.size === 1 ? 'text' : 'published',
+    title, date: dates.size === 1 ? [...dates][0] : published[1],
+    dateSource: dates.size === 1 ? 'text' : dates.size > 1 ? 'ambiguous' : 'published',
     published: `${published[1]}T${published[2]}`,
     distance: distance ? Number(distance[1].replace(/,/g, '')) * (distance[2].toLowerCase() === 'km' ? 1000 : 1) : undefined,
     duration: duration ? Number(duration[1]) * 60 + Number(duration[2] ?? 0) : undefined,
@@ -84,4 +85,22 @@ export function rankSwims(swims: SwimRecord[], post?: DiaryPost): SwimRecord[] {
   };
   return swims.filter(r => !post || r.start_local.slice(0, 19) <= post.published)
     .sort((a, b) => score(b) - score(a) || b.start_local.localeCompare(a.start_local));
+}
+
+export function automaticSwim(candidates: SwimRecord[], explicitDate: boolean, post?: DiaryPost): SwimRecord | undefined {
+  if (post?.dateSource === 'ambiguous') return undefined;
+  if (post?.distance !== undefined && post.duration !== undefined) {
+    const exact = candidates.filter(r => r.distance !== null && r.moving_time !== null
+      && Math.abs(r.distance - post.distance!) <= 25 && Math.abs(r.moving_time - post.duration!) <= 120);
+    return exact.length === 1 ? exact[0] : undefined;
+  }
+  if (candidates.length !== 1) return undefined;
+  const [swim] = candidates;
+  if (post?.distance !== undefined && (swim.distance === null || Math.abs(swim.distance - post.distance) > 25)) return undefined;
+  if (post?.duration !== undefined && (swim.moving_time === null || Math.abs(swim.moving_time - post.duration) > 120)) return undefined;
+  if (explicitDate || post?.dateSource === 'text') return swim;
+  if (!post || !/^(?:오늘\s*)?(?:수영|강습|자유수영|자수)\s*(?:완(?:료)?|끝)[.!~\s]*$/.test(post.title)) return undefined;
+  // A short completion post is a clue only for a single same-day workout.
+  const delay = wallTimeMs(post.published) - wallTimeMs(swim.start_local.slice(0, 19));
+  return delay > 0 && delay <= 6 * 60 * 60 * 1000 ? swim : undefined;
 }

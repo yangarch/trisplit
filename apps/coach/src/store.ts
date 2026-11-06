@@ -171,6 +171,16 @@ export class CoachStore {
     return this.db.prepare('SELECT url,body FROM swim_notes WHERE athlete_id=? AND activity_id=?')
       .get(this.ownerId,id) as SwimNote | undefined;
   }
+  swimIdForNoteUrl(url: string): number | undefined {
+    const row = this.db.prepare('SELECT activity_id FROM swim_notes WHERE athlete_id=? AND url=?')
+      .get(this.ownerId,url) as { activity_id: number } | undefined;
+    return row?.activity_id;
+  }
+  recentLinkedSwims(): SwimRecord[] {
+    const rows = this.db.prepare('SELECT activity_id FROM swim_notes WHERE athlete_id=? ORDER BY rowid DESC LIMIT 20')
+      .all(this.ownerId) as { activity_id: number }[];
+    return rows.map(r => this.swim(r.activity_id)).filter((r): r is SwimRecord => r !== undefined);
+  }
   saveSwimNote(id: number, note: SwimNote, replace: boolean): boolean {
     return this.db.transaction(() => {
       if (!this.swim(id)) return false;

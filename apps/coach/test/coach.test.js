@@ -9,7 +9,7 @@ const { createApp } = require('../dist/app');
 const { CoachWorker, sendNotification } = require('../dist/services/worker');
 const { buildPrompt, swimEvidence } = require('../dist/services/analysis');
 const { validateBundle } = require('../dist/types/workout');
-const { readDiaryHtml, rankSwims, diaryUrl } = require('../dist/services/swimNotes');
+const { automaticSwim, readDiaryHtml, rankSwims, diaryUrl } = require('../dist/services/swimNotes');
 
 function bundle(id = 1000000000001, sport = 'swimming') {
   return {
@@ -182,6 +182,21 @@ test('API authentication, cutover, signed sessions and HTML escaping protect pri
     assert.match(await (await fetch(url+'/swim-notes/8',{headers:signed})).text(),/&lt;script&gt;private&lt;\/script&gt;/);
     assert.equal((await post('/swim-notes/8/remove',{csrf})).status,303);
     assert.equal(store.swimNote(8),undefined);
+    const firstImport = await (await post('/swim-notes/import',{links:noteUrl,date:'2025-10-27',csrf})).text();
+    assert.match(firstImport,/자동 연결됨/);
+    assert.equal(store.swimNote(8).url,noteUrl);
+    const repeatImport = await (await post('/swim-notes/import',{links:noteUrl,csrf})).text();
+    assert.match(repeatImport,/이미 연결됨/);
+    assert.doesNotMatch(repeatImport,/\/8\/link/);
+    assert.match(await (await fetch(url+'/swim-notes',{headers:signed})).text(),/최근 연결한 후기/);
+    assert.equal((await post('/swim-notes/8/link',{url:noteUrl,csrf})).status,303);
+    assert.equal((await importCatalog([historical,{...historical,activity_id:9}])).status,200);
+    const anotherUrl = 'https://example.test/other';
+    const ambiguous = await (await post('/swim-notes/import',{links:anotherUrl,date:'2025-10-27',csrf})).text();
+    assert.match(ambiguous,/다른 후기 연결됨/);
+    assert.match(ambiguous,/\/9\/link/);
+    assert.equal(store.swimNote(9),undefined);
+    assert.equal(store.analyses().length,1);
   } finally {await new Promise(r=>server.close(r));store.close();}
 });
 
@@ -195,6 +210,11 @@ test('diary suggestions prefer an explicit earlier swim date and rank compatible
   const r = {activity_id:1,start_local:'2026-02-04T07:03:00',distance:1500,moving_time:2700};
   assert.deepEqual(rankSwims([r,{...r,activity_id:2,start_local:'2026-02-04T19:00:00',distance:1000}],post)
     .map(r => r.activity_id),[1,2]);
+  assert.equal(automaticSwim([r,{...r,activity_id:2,distance:1000}],false,post)?.activity_id,1);
+  const shortPost = {title:'강습완',date:'2026-02-04',dateSource:'published',published:'2026-02-04T09:00:00'};
+  assert.equal(automaticSwim([r],false,shortPost)?.activity_id,1);
+  assert.equal(automaticSwim([r],false,{...shortPost,title:'밀린 강습일기'}),undefined);
+  assert.equal(automaticSwim([r],false,{...shortPost,dateSource:'ambiguous'}),undefined);
   assert.equal(diaryUrl('https://gall.dcinside.com/mini/board/view/?id=swimmingdiary&no=12&page=2'),
     'https://gall.dcinside.com/mini/board/view/?id=swimmingdiary&no=12');
   assert.equal(diaryUrl('https://gall.dcinside.com.example.com/mini/board/view/?id=swimmingdiary&no=12'),undefined);
