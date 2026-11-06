@@ -14,10 +14,12 @@ export async function sendText(url: string, text: string): Promise<DeliveryResul
   } catch { return 'unknown'; }
 }
 
-export async function sendNotification(url: string, a: Analysis): Promise<DeliveryResult> {
+export async function sendNotification(url: string, a: Analysis, publicOrigin = ''): Promise<DeliveryResult> {
   const icon = a.sport === 'swimming' ? '🏊' : a.sport === 'running' ? '🏃' : '🚴';
   const distance = a.distance === null ? '거리 미기록' : a.sport === 'swimming' ? `${Math.round(a.distance)}m` : `${(a.distance / 1000).toFixed(1)}km`;
-  return sendText(url, `${icon} ${a.activity_name} · ${a.activity_date.slice(0, 10)} · ${distance}\n${a.analysis}`);
+  const note = a.sport === 'swimming' && publicOrigin ? `\n<${publicOrigin}/swim-notes/${a.activity_id}|후기 연결>` : '';
+  const text = `${icon} ${a.activity_name} · ${a.activity_date.slice(0, 10)} · ${distance}\n${a.analysis}`;
+  return sendText(url, text.slice(0, 1900 - note.length) + note);
 }
 
 export class CoachWorker {

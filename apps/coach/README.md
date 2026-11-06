@@ -83,6 +83,16 @@ Keep them outside the code repository. Do not migrate them through Git.
   `COOKIE_SECURE=true` requires HTTPS at the browser-facing proxy.
 - `GET /dashboard`: authenticated three-sport history, plus an optional
   `COACH_REPORT_URL` link to the existing protected lakehouse report.
+- `GET /swim-notes`: authenticated swim lookup and review of candidates from
+  submitted diary links. The public swimmingdiary board supplies post metadata;
+  other HTTPS links can be matched using a date entered by the owner.
+- `GET /swim-notes/ACTIVITY_ID`: attach, edit, or remove a note in the owner's
+  private DB. Candidate selection requires confirmation. Set `COACH_PUBLIC_URL`
+  to the HTTPS coach origin to include this route in future swim alerts.
+- `POST /api/swim-catalog`: bearer-authenticated canonical swim lookup data
+  containing only IDs, local start times, distances and moving times. The
+  publisher sends changes after the existing quality gate. Deploy the receiver
+  before the publisher. Note links and text stay out of model and alert inputs.
 
 The worker claims one job at a time. Analysis text, processed history and the
 notification outbox are committed in one SQLite transaction. Model failures

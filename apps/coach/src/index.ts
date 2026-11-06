@@ -27,6 +27,9 @@ const port = Number(process.env.PORT || '3003');
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Invalid PORT');
 const reportUrl = process.env.COACH_REPORT_URL || '';
 if (reportUrl && !/^https?:\/\//.test(reportUrl)) throw new Error('Invalid COACH_REPORT_URL');
+const publicUrl = process.env.COACH_PUBLIC_URL ? new URL(process.env.COACH_PUBLIC_URL) : undefined;
+if (publicUrl && (publicUrl.protocol !== 'https:' || publicUrl.username || publicUrl.password
+    || publicUrl.pathname !== '/' || publicUrl.search || publicUrl.hash)) throw new Error('Invalid COACH_PUBLIC_URL');
 const store = new CoachStore(process.env.DATABASE_URL || './data/coach.db', ownerId);
 const app = createApp(store, {
   ingestToken: secret('COACH_INGEST_TOKEN'), adminToken: secret('ADMIN_TOKEN'), sessionSecret: secret('SESSION_SECRET'),
@@ -34,7 +37,7 @@ const app = createApp(store, {
 });
 const worker = new CoachWorker(store,
   b => analyze(b, apiKey, process.env.COACH_MODEL || 'claude-sonnet-4-6'),
-  notifications ? a => sendNotification(webhook, a) : undefined,
+  notifications ? a => sendNotification(webhook, a, publicUrl?.origin) : undefined,
   notifications ? id => sendText(webhook, `🚨 Training Companion 분석 실패 · 활동 ${id}\n자동 재시도는 최대 5회입니다. 관리 상태에서 확인하세요.`) : undefined);
 if (enabled) {
   void worker.tick().catch(() => console.error('Coach worker failed'));

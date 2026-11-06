@@ -9,6 +9,7 @@ const { createApp } = require('../dist/app');
 const { CoachWorker, sendNotification } = require('../dist/services/worker');
 const { buildPrompt, swimEvidence } = require('../dist/services/analysis');
 const { validateBundle } = require('../dist/types/workout');
+const { readDiaryHtml, rankSwims, diaryUrl } = require('../dist/services/swimNotes');
 
 function bundle(id = 1000000000001, sport = 'swimming') {
   return {
@@ -159,7 +160,44 @@ test('API authentication, cutover, signed sessions and HTML escaping protect pri
     assert.ok(html.includes('&lt;script&gt;secret()&lt;/script&gt;'));assert.ok(!html.includes('<script>secret()'));
     const tampered=cookie.replace('42','99');assert.equal((await fetch(url+'/dashboard',{headers:{Cookie:tampered},redirect:'manual'})).status,302);
     assert.equal((await fetch(url+'/api/retry/delivery/1',{method:'POST',headers:auth,body:'{}'})).status,400);
+
+    const historical = {activity_id:8,start_local:'2025-10-27T07:03:00',distance:1500,moving_time:2700};
+    const importCatalog = records => fetch(url+'/api/swim-catalog',{method:'POST',headers:auth,body:JSON.stringify(records)});
+    assert.equal((await importCatalog([{...historical,lat:50}])).status,400);
+    assert.equal((await importCatalog([historical])).status,200);
+    const deepLink = await fetch(url+'/swim-notes/8',{redirect:'manual'});
+    assert.equal(deepLink.headers.get('location'),'/login?next=%2Fswim-notes%2F8');
+    const signed = {Cookie:cookie,'Content-Type':'application/x-www-form-urlencoded'};
+    const post = (route,values) => fetch(url+route,{method:'POST',headers:signed,body:new URLSearchParams(values),redirect:'manual'});
+    const detail = await (await fetch(url+'/swim-notes/8',{headers:signed})).text();
+    const csrf = /name="csrf" value="([a-f0-9]+)"/.exec(detail)[1];
+    assert.equal((await post('/swim-notes/8',{body:'forged'})).status,403);
+    const noteUrl = 'https://example.test/swim';
+    const preview = await (await post('/swim-notes/preview',{links:noteUrl,date:'2025-10-27',csrf})).text();
+    assert.match(preview,/2025-10-27 07:03 · 1,500m/);
+    assert.equal(store.swimNote(8),undefined);
+    assert.equal((await post('/swim-notes/8/link',{url:noteUrl,csrf})).status,303);
+    assert.equal((await post('/swim-notes/1/link',{url:noteUrl,csrf})).status,409);
+    assert.equal((await post('/swim-notes/8',{url:noteUrl,body:'<script>private</script>',csrf})).status,303);
+    assert.match(await (await fetch(url+'/swim-notes/8',{headers:signed})).text(),/&lt;script&gt;private&lt;\/script&gt;/);
+    assert.equal((await post('/swim-notes/8/remove',{csrf})).status,303);
+    assert.equal(store.swimNote(8),undefined);
   } finally {await new Promise(r=>server.close(r));store.close();}
+});
+
+test('diary suggestions prefer an explicit earlier swim date and rank compatible distance and time', () => {
+  const html = '<meta property="og:title" content="강습완 - 수영일기 미니 갤러리">'
+    + '<span class="gall_date" title="2026-02-05 10:20:00"></span>'
+    + '<div class="write_div"><p>2026-02-04 강습</p><p>총 거리 1.5 km</p><p>운동 시간 45분</p></div>';
+  const post = readDiaryHtml(html);
+  assert.equal(post.date,'2026-02-04');
+  assert.equal(post.dateSource,'text');
+  const r = {activity_id:1,start_local:'2026-02-04T07:03:00',distance:1500,moving_time:2700};
+  assert.deepEqual(rankSwims([r,{...r,activity_id:2,start_local:'2026-02-04T19:00:00',distance:1000}],post)
+    .map(r => r.activity_id),[1,2]);
+  assert.equal(diaryUrl('https://gall.dcinside.com/mini/board/view/?id=swimmingdiary&no=12&page=2'),
+    'https://gall.dcinside.com/mini/board/view/?id=swimmingdiary&no=12');
+  assert.equal(diaryUrl('https://gall.dcinside.com.example.com/mini/board/view/?id=swimmingdiary&no=12'),undefined);
 });
 
 test('notification errors have explicit failure states and redirects do not leak webhook requests', async () => {
@@ -168,6 +206,11 @@ test('notification errors have explicit failure states and redirects do not leak
     global.fetch=async(_url,opts)=>{assert.equal(opts.redirect,'error');return {ok:false,status:500};};
     assert.equal(await sendNotification('http://example.invalid',a),'unknown');
     global.fetch=async()=>({ok:false,status:429});assert.equal(await sendNotification('http://example.invalid',a),'failed');
+    global.fetch=async(_url,opts)=>{
+      assert.match(JSON.parse(opts.body).text,/<https:\/\/coach.example\/swim-notes\/5\|후기 연결>/);
+      return {ok:true};
+    };
+    assert.equal(await sendNotification('http://example.invalid',{...a,activity_id:5,sport:'swimming'},'https://coach.example'),'sent');
     global.fetch=async()=>{throw new Error('timeout');};assert.equal(await sendNotification('http://example.invalid',a),'unknown');
   } finally {global.fetch=original;}
 });

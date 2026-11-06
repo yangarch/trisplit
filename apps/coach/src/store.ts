@@ -10,6 +10,10 @@ export interface Analysis {
   activity_id: number; athlete_id: number; sport: string; activity_name: string;
   activity_date: string; distance: number | null; analysis: string; delivery_state: string | null;
 }
+export interface SwimRecord {
+  activity_id: number; start_local: string; distance: number | null; moving_time: number | null;
+}
+export interface SwimNote { url: string | null; body: string | null }
 
 /** Open a COPY of the legacy DB. Existing tables are retained for rollback. */
 export class CoachStore {
@@ -41,6 +45,15 @@ export class CoachStore {
         CREATE TABLE IF NOT EXISTS processed_activities (
           id INTEGER PRIMARY KEY AUTOINCREMENT, activity_id INTEGER UNIQUE NOT NULL,
           athlete_id INTEGER NOT NULL, processed_at TEXT DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS swim_catalog (
+          athlete_id INTEGER NOT NULL, activity_id INTEGER NOT NULL, start_local TEXT NOT NULL,
+          distance REAL, moving_time REAL, PRIMARY KEY (athlete_id, activity_id)
+        );
+        CREATE INDEX IF NOT EXISTS swim_catalog_date ON swim_catalog(athlete_id, start_local);
+        CREATE TABLE IF NOT EXISTS swim_notes (
+          athlete_id INTEGER NOT NULL, activity_id INTEGER NOT NULL, url TEXT, body TEXT,
+          PRIMARY KEY (athlete_id, activity_id), UNIQUE (athlete_id, url)
         );
       `);
       if (this.hasTable('swim_analyses')) {
@@ -130,6 +143,47 @@ export class CoachStore {
     return this.db.prepare(`SELECT a.*,d.state AS delivery_state FROM activity_analyses a
       LEFT JOIN coach_deliveries d USING(activity_id) WHERE athlete_id=? ORDER BY activity_date DESC, activity_id DESC LIMIT 200`)
       .all(this.ownerId) as Analysis[];
+  }
+  saveSwimCatalog(records: SwimRecord[]): void {
+    const upsert = this.db.prepare(`INSERT INTO swim_catalog VALUES (?,?,?,?,?)
+      ON CONFLICT(athlete_id,activity_id) DO UPDATE SET
+      start_local=excluded.start_local,distance=excluded.distance,moving_time=excluded.moving_time`);
+    this.db.transaction(() => {
+      for (const r of records) upsert.run(this.ownerId, r.activity_id, r.start_local, r.distance, r.moving_time);
+    })();
+  }
+  swim(id: number): SwimRecord | undefined {
+    return this.db.prepare(`SELECT activity_id,start_local,distance,moving_time FROM swim_catalog
+      WHERE athlete_id=@owner AND activity_id=@id
+      UNION ALL SELECT activity_id,activity_date,distance,NULL FROM activity_analyses
+      WHERE athlete_id=@owner AND activity_id=@id AND sport='swimming' LIMIT 1`)
+      .get({owner:this.ownerId,id}) as SwimRecord | undefined;
+  }
+  swimsOn(date: string): SwimRecord[] {
+    return this.db.prepare(`SELECT activity_id,start_local,distance,moving_time FROM swim_catalog
+      WHERE athlete_id=@owner AND start_local>=@date AND start_local<@end
+      UNION ALL SELECT a.activity_id,a.activity_date,a.distance,NULL FROM activity_analyses a
+      WHERE a.athlete_id=@owner AND a.sport='swimming' AND substr(a.activity_date,1,10)=@date
+        AND NOT EXISTS (SELECT 1 FROM swim_catalog c WHERE c.athlete_id=@owner AND c.activity_id=a.activity_id)
+      ORDER BY start_local,activity_id`).all({owner:this.ownerId,date,end:`${date}U`}) as SwimRecord[];
+  }
+  swimNote(id: number): SwimNote | undefined {
+    return this.db.prepare('SELECT url,body FROM swim_notes WHERE athlete_id=? AND activity_id=?')
+      .get(this.ownerId,id) as SwimNote | undefined;
+  }
+  saveSwimNote(id: number, note: SwimNote, replace: boolean): boolean {
+    return this.db.transaction(() => {
+      if (!this.swim(id)) return false;
+      const duplicate = note.url && this.db.prepare('SELECT 1 FROM swim_notes WHERE athlete_id=? AND url=? AND activity_id<>?')
+        .get(this.ownerId,note.url,id);
+      if (duplicate || (!replace && this.swimNote(id))) return false;
+      this.db.prepare(`INSERT INTO swim_notes VALUES (?,?,?,?) ON CONFLICT(athlete_id,activity_id)
+        DO UPDATE SET url=excluded.url,body=excluded.body`).run(this.ownerId,id,note.url,note.body);
+      return true;
+    })();
+  }
+  removeSwimNote(id: number): void {
+    this.db.prepare('DELETE FROM swim_notes WHERE athlete_id=? AND activity_id=?').run(this.ownerId,id);
   }
   status(): unknown {
     return {

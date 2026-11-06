@@ -100,7 +100,27 @@ def main() -> int:
             name = f"{row['activity_id']}.json"
             atomic_json(out / name, payload)
             files.append(name)
-        atomic_json(out / "manifest.json", {"schema_version": 1, "pipeline_run": args.run_id, "files": files})
+        swims = spark.sql("""
+          SELECT f.activity_id, substring(get_json_object(b._raw, '$.start_date_local'), 1, 19) AS start_local,
+                 f.distance_km * 1000 AS distance, s.moving_time
+          FROM tc.gold.mart_activity_feed f
+          JOIN tc.silver.activities s ON f.activity_id=s.activity_id
+          JOIN tc.bronze.activities b ON f.activity_id=b.activity_id
+          WHERE f.sport='swimming' AND NOT s.is_duplicate
+          ORDER BY f.activity_id
+        """).collect()
+        catalog = []
+        for swim in swims:
+            record = swim.asDict()
+            try:
+                if len(record['start_local'] or '') != 19:
+                    continue
+                datetime.fromisoformat(record['start_local'])
+            except ValueError:
+                continue
+            catalog.append(record)
+        atomic_json(out / "swim-catalog.json", catalog)
+        atomic_json(out / "manifest.json", {"schema_version": 1, "pipeline_run": args.run_id, "files": files, "swim_catalog": True})
         print(f"[coach] exported {len(files)} canonical activities (no model call or notification)")
         return 0
     finally:
