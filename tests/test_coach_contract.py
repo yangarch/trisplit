@@ -13,7 +13,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts'))
 from coach_contract import build_bundle, summarize_streams
-from export_coach import atomic_json
+from export_coach import atomic_json, swim_pool_length
 from publish_coach import publish
 
 spec = importlib.util.spec_from_file_location('intervals_fetch', ROOT / 'ingest/intervals/fetch.py')
@@ -82,6 +82,24 @@ class CoachContractTests(unittest.TestCase):
         b=build_bundle(r,r['raw'],[],[],run_id='test',exported_at='test')
         self.assertIsNone(b['metrics']['np_computed']);self.assertIsNone(b['stream_summary']['first_watts'])
         self.assertTrue(any('dropout' in s for s in b['provenance']['limitations']))
+
+    def test_pool_evidence_and_measured_historical_power(self):
+        r = row()
+        r['raw']['_intervals'] = {'id': 'i123'}
+        with tempfile.TemporaryDirectory() as temp:
+            raw_dir = Path(temp)
+            (raw_dir / '2026-01-04_i123.json').write_text(json.dumps({'id':'i123','type':'Swim','pool_length':50}))
+            self.assertEqual(swim_pool_length(r, raw_dir, {}), 50)
+            r['type'] = 'OpenWaterSwim'
+            self.assertIsNone(swim_pool_length(r, raw_dir, {}))
+            r['pool_length_m'] = swim_pool_length(r, raw_dir, {'1':25})
+        past = [dict(row(id, 'cycling', '2026-01-03T07:00:00Z'), np_computed=200,
+                     device_watts=measured, power_dropout=dropout)
+                for id, measured, dropout in [(2, True, False), (3, False, False), (4, True, True)]]
+        b = build_bundle(r, r['raw'], past, [], run_id='test', exported_at='test')
+        self.assertEqual(b['metrics']['pool_length_m'], 25)
+        self.assertEqual(b['activity']['type'], 'OpenWaterSwim')
+        self.assertEqual({h['id']: h['np_computed'] for h in b['recent']}, {2:200, 3:None, 4:None})
 
     def test_publisher_retry_after_lost_ack_does_not_duplicate_queued_id(self):
         received=set();calls=[]

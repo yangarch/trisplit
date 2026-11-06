@@ -34,6 +34,42 @@ test('all three sports accept the shared contract; GPS and future context are re
   const unchecked = bundle(); unchecked.provenance.quality_checked=false; assert.throws(()=>validateBundle(unchecked));
 });
 
+test('weekly windows use all recorded sports and swim comparisons require compatible pool evidence', () => {
+  const b = bundle();
+  b.activity.start_date_local = '2026-02-04T07:00:00';
+  b.activity.type = b.activity.sport_type = 'OpenWaterSwim';
+  b.metrics.pool_length_m = 25;
+  const swim = {sport:'swimming', type:'Swim', distance:1000, moving_time:1200,
+    average_speed:0.8, average_heartrate:null, is_indoor:false, swim_rest_included:true};
+  b.recent = [
+    {...swim, id:1, date:'2026-01-28T07:00:00', pool_length_m:25},
+    {...swim, id:2, date:'2026-01-28T06:59:59', pool_length_m:50},
+    {...swim, id:3, date:'2026-01-07T07:00:00', pool_length_m:25, swim_rest_included:false},
+    {...swim, id:4, date:'2026-01-26T07:00:00', sport:'running', type:'Run'},
+  ];
+  validateBundle(b);
+  const evidence = JSON.parse(buildPrompt(b).split('\n관측 자료 JSON:\n')[1]);
+  assert.deepEqual(evidence.recorded_volume_by_7_day_window.map(w => w.swimming.sessions), [1,1,0,1]);
+  assert.equal(evidence.recorded_volume_by_7_day_window[1].running.moving_seconds, 1200);
+  assert.deepEqual(evidence.comparable_sessions.map(r => r.id), [1]);
+  b.recent[2].date = '2026-01-07T06:59:59';
+  assert.throws(() => validateBundle(b), /historical context/);
+});
+
+test('cycling compares measured session NP and time only with available heart rate', () => {
+  const b = bundle(10, 'cycling');
+  b.metrics.np_computed = 200;
+  b.activity.average_heartrate = 140;
+  const ride = {sport:'cycling', type:'Ride', distance:5000, moving_time:1200,
+    date:'2026-01-03T07:00:00', average_speed:4, average_heartrate:145, is_indoor:false, swim_rest_included:false};
+  b.recent = [{...ride,id:1,np_computed:205}, {...ride,id:2,np_computed:null},
+    {...ride,id:3,np_computed:195,average_heartrate:null}, {...ride,id:4,np_computed:150}];
+  validateBundle(b);
+  const evidence = JSON.parse(buildPrompt(b).split('\n관측 자료 JSON:\n')[1]);
+  assert.deepEqual(evidence.comparable_sessions.map(r => r.id), [1]);
+  assert.equal(evidence.recorded_volume_by_7_day_window[0].cycling.sessions, 4);
+});
+
 test('legacy analyses from multiple owners and processed-only activities survive migration without resending', () => {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'coach-migration-')); const file=path.join(dir,'copy.db');
   const legacy=new Database(file);

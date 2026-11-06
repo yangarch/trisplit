@@ -59,6 +59,17 @@ or model. Missing sensor values remain missing; recognized power dropouts and
 estimated power suppress power-derived coaching metrics. Rest-included swim
 history is labeled and never silently presented as active-swim pace.
 
+The coach summarizes those 28 days in four rolling seven-day windows by sport.
+Historical comparisons use similar session NP and duration for measured cycling,
+activity type and distance for running, and known pool length, matching rest
+inclusion and similar distance for swimming. These comparisons describe recorded
+sessions. They cannot establish physiological recovery or changes in fitness.
+Pool length comes from the stored Intervals activity or an explicit confirmation
+in the private `$TC_ROOT/activities/swimming/pool-length-overrides.json` map from
+canonical activity ID to length in meters. Confirmations do not change the source
+activity type. Update the coach receiver before deploying the exporter, because
+the previous receiver rejects new fields. The updated receiver accepts older bundles.
+
 `export_coach` and `publish_coach` are separate downstream tasks after
 `dbt_test`. Reports do not depend on model calls or Slack. A queue failure fails
 its own task and uses the existing Airflow failure alert; retries use the same

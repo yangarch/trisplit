@@ -13,6 +13,15 @@ def finite(value):
     return float(value) if isinstance(value, (int, float)) and math.isfinite(value) else None
 
 
+def pool_length_m(value):
+    length = finite(value) if not isinstance(value, bool) else None
+    return length if length is not None and length > 0 else None
+
+
+def power_unreliable(row: dict) -> bool:
+    return bool(row.get("power_dropout")) or row.get("device_watts") is False
+
+
 def local_time(raw: dict) -> str:
     # Strava-style local timestamps carry a misleading Z; preserve wall time.
     text = str(raw.get("start_date_local") or "")[:19]
@@ -74,6 +83,10 @@ def build_bundle(row: dict, raw: dict, history: list[dict], points: list[dict], 
             "distance": float(r["distance_km"]) * 1000, "moving_time": float(r["moving_time"]),
             "average_speed": finite(r.get("average_speed")), "average_heartrate": finite(r.get("average_heartrate")),
             "is_indoor": bool(r["is_indoor"]), "swim_rest_included": bool(r.get("swim_rest_included")),
+            "type": r["type"],
+            "np_computed": finite(r.get("np_computed"))
+            if r["sport"] == "cycling" and r.get("device_watts") is True and not power_unreliable(r) else None,
+            "pool_length_m": pool_length_m(r.get("pool_length_m")) if r["sport"] == "swimming" else None,
         })
     recent.sort(key=lambda r: (r["date"], r["id"]), reverse=True)
     if len(recent) > 200:
@@ -90,25 +103,26 @@ def build_bundle(row: dict, raw: dict, history: list[dict], points: list[dict], 
     limitations = ["Training intent, symptoms, weather and recovery are not supplied.",
                    "History covers the preceding 28 days, strictly before this activity."]
     if sport == "swimming":
-        limitations.append("Lesson/free-swim and actual pool/open-water setting are unconfirmed; device type may be mislabeled.")
+        limitations.append("Lesson/free-swim is unconfirmed; device type may be mislabeled. Pool setting is unknown if pool_length_m is null.")
         if len(laps) <= 1:
             limitations.append("Recorded rest laps unavailable; reconstruction requires complete monotonic streams.")
     if not points:
         limitations.append("No recorded stream points available.")
-    power_unreliable = bool(row.get("power_dropout")) or row.get("device_watts") is False
-    if sport == "cycling" and power_unreliable:
+    bad_power = power_unreliable(row)
+    if sport == "cycling" and bad_power:
         limitations.append("Power dropout flagged or power is estimated; power-derived metrics and half-power comparisons withheld.")
     summary = summarize_streams(points, activity["elapsed_time"])
-    if power_unreliable:
+    if bad_power:
         for key in list(summary):
             if "watts" in key:
                 summary[key] = None
     return {
         "schema_version": 1, "activity": activity,
-        "metrics": {**{k: None if power_unreliable and k != "ftp_watts" else finite(row.get(k))
+        "metrics": {**{k: None if bad_power and k != "ftp_watts" else finite(row.get(k))
                        for k in ("np_computed", "intensity_factor", "tss", "ftp_watts")},
                     "ftp_date": str(row["ftp_date"]) if row.get("ftp_date") else None,
-                    "swim_rest_included": bool(row.get("swim_rest_included"))},
+                    "swim_rest_included": bool(row.get("swim_rest_included")),
+                    "pool_length_m": pool_length_m(row.get("pool_length_m")) if sport == "swimming" else None},
         "laps": laps, "streams": streams, "recent": recent,
         "stream_summary": summary,
         "provenance": {"pipeline_run": run_id, "exported_at": exported_at,

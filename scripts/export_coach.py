@@ -5,12 +5,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from coach_contract import build_bundle
+from coach_contract import build_bundle, local_time, pool_length_m
 
 
 def atomic_json(path: Path, value: object) -> None:
@@ -19,6 +20,23 @@ def atomic_json(path: Path, value: object) -> None:
     temp.write_text(json.dumps(value, ensure_ascii=False, allow_nan=False) + "\n")
     temp.chmod(0o600)
     temp.replace(path)
+
+
+def swim_pool_length(row: dict, raw_dir: Path, confirmed: dict) -> float | None:
+    override = confirmed.get(str(row["activity_id"]))
+    if override is not None:
+        return pool_length_m(override)
+    source_id = (row["raw"].get("_intervals") or {}).get("id")
+    if row["type"] != "Swim" or not isinstance(source_id, str) or not re.fullmatch(r"i\d+", source_id):
+        return None
+    day = local_time(row["raw"])[:10]
+    try:
+        activity = json.loads((raw_dir / f"{day}_{source_id}.json").read_text())
+    except FileNotFoundError:
+        return None
+    if activity.get("id") == source_id and activity.get("type") == "Swim":
+        return pool_length_m(activity.get("pool_length"))
+    return None
 
 
 def main() -> int:
@@ -39,6 +57,11 @@ def main() -> int:
     root = Path(os.environ.get("TC_ROOT", Path(__file__).resolve().parents[2])).resolve()
     if out.is_relative_to(root / "reports/web") or out.is_relative_to(Path(__file__).resolve().parents[1]):
         raise ValueError("Coach output must be outside the code repository and web root")
+    overrides = root / "activities/swimming/pool-length-overrides.json"
+    confirmed = json.loads(overrides.read_text()) if overrides.exists() else {}
+    if not isinstance(confirmed, dict) or any(not k.isdecimal() or pool_length_m(v) is None for k, v in confirmed.items()):
+        raise ValueError("Pool overrides must map canonical activity IDs to positive lengths in meters")
+    raw_dir = root / "activities/intervals/raw"
     from spark_session import get_spark
     spark = get_spark("export-coach")
     spark.sparkContext.setLogLevel("ERROR")
@@ -60,6 +83,8 @@ def main() -> int:
         """).collect()]
         for r in rows:
             r["raw"] = json.loads(r.pop("raw_json"))
+            if r["sport"] == "swimming":
+                r["pool_length_m"] = swim_pool_length(r, raw_dir, confirmed)
         targets = [r for r in rows if oldest <= r["start_date_key"] <= today]
         by_id = defaultdict(list)
         if targets:
